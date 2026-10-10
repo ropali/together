@@ -32,6 +32,12 @@ Available commands:
 
 To deploy, run `npm run build` and serve the generated `dist/` directory from a static web host. Configure that host to serve the app entry point for board URLs.
 
+## Deploy to GitHub Pages
+
+The `Deploy to GitHub Pages` workflow builds and publishes the site when changes are pushed to `main`; it can also be started manually from the repository's **Actions** tab. In the repository settings, open **Pages** and set the build and deployment source to **GitHub Actions**. After the first successful workflow run, the app is available at <https://ropali.github.io/together/>.
+
+The Pages build uses the `/together/` repository path, while local development and previews use `/`. TURN environment variables, if needed, must be configured as GitHub Actions variables/secrets and passed to the build step because Vite embeds them at build time.
+
 ## Peer-to-peer networking
 
 Board state is synchronized with Yjs over direct WebRTC data channels. PeerJS's public PeerServer is used for peer-ID registration and initial connection signaling; it does not carry board state. A public Google STUN server is configured to help establish direct connections.
