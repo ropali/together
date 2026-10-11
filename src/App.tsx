@@ -1,18 +1,24 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode, type SetStateAction } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type SetStateAction } from 'react'
 import { P2PYjsRoom } from './lib/p2pYjs'
-import { observeRetroBoard, writeRetroBoard, type RetroBoard, type RetroColumn, type RetroNote, type RetroTimer } from './lib/retroBoardSync'
+import {
+  observeRetroBoard,
+  writeRetroBoard,
+  type RetroBoard,
+  type RetroColumn,
+  type RetroNote,
+  type RetroComment,
+} from './lib/retroBoardSync'
+import togetherLogo from './assets/together-logo.png'
+import { MarkdownView } from './components/MarkdownView'
 import './App.css'
 
-type Column = RetroColumn
 type Note = RetroNote
 type BoardData = RetroBoard
-type IconName = 'spark' | 'plus' | 'users' | 'timer' | 'download' | 'lock' | 'unlock' | 'eye' | 'moon' | 'sun' | 'settings' | 'copy' | 'check' | 'close' | 'send' | 'arrow' | 'edit' | 'trash' | 'heart' | 'link' | 'refresh'
-type Modal = 'note' | 'connect' | 'settings' | 'new-board' | 'guest-name' | null
-type PeerRole = 'host' | 'guest'
-type PeerState = 'idle' | 'connecting' | 'ready' | 'connected' | 'disconnected' | 'failed'
-const TIMER_PRESETS = [5, 10, 15, 20, 30, 45, 60]
-const NOTE_REACTIONS = ['👍', '❤️', '🎉', '😂', '🤔'] as const
-const REACTION_ACTOR_KEY = 'together-retro-reaction-actor-v1'
+type Modal = 'connect' | 'settings' | 'new-board' | 'guest-name' | null
+
+const REACTION_ACTOR_KEY = 'together-retro-reaction-actor-v5'
+const STORAGE_KEY = 'together-retro-boards-v5'
+const ACTIVE_BOARD_KEY = 'together-retro-active-board-v5'
 
 function getReactionActorId(): string {
   const saved = localStorage.getItem(REACTION_ACTOR_KEY)
@@ -22,10 +28,14 @@ function getReactionActorId(): string {
   return actorId
 }
 
-const STORAGE_KEY = 'together-retro-boards-v1'
-const LEGACY_STORAGE_KEY = 'together-retro-board-v1'
-const ACTIVE_BOARD_KEY = 'together-retro-active-board-v1'
-const DEFAULT_COLUMN_TITLES = ['What went well', 'What could be better', 'Action items']
+function ensureActionItemsAtLast<T extends { title?: string } | string>(columns: T[]): T[] {
+  const getTitle = (c: T) => (typeof c === 'string' ? c : (c as { title?: string }).title || '')
+  const nonActions = columns.filter((c) => !getTitle(c).toLowerCase().includes('action'))
+  const actions = columns.filter((c) => getTitle(c).toLowerCase().includes('action'))
+  return [...nonActions, ...actions]
+}
+
+const DEFAULT_COLUMN_TITLES = ['What went well', 'What went wrong', 'Kudos & Shoutouts', 'Action items']
 const routeParams = new URLSearchParams(window.location.search)
 const joinPeerId = routeParams.get('join')?.trim() ?? ''
 const ownerPeerId = routeParams.get('owner')?.trim() ?? ''
@@ -34,53 +44,224 @@ const boardRouteDetails = (() => {
   if (!encoded) return null
   try {
     const value: unknown = JSON.parse(encoded)
-    if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' ||
-      !('title' in value) || typeof value.title !== 'string' || !('columns' in value) || !Array.isArray(value.columns) ||
-      value.columns.length < 2 || value.columns.length > 5 ||
-      !value.columns.every((column: unknown) => typeof column === 'string' && column.trim().length > 0 && column.length <= 28)) return null
-    return { id: value.id, title: value.title.slice(0, 60), columns: value.columns as string[] }
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('id' in value) ||
+      typeof value.id !== 'string' ||
+      !('title' in value) ||
+      typeof value.title !== 'string' ||
+      !('columns' in value) ||
+      !Array.isArray(value.columns) ||
+      value.columns.length < 2 ||
+      value.columns.length > 5 ||
+      !value.columns.every(
+        (column: unknown) =>
+          typeof column === 'string' && column.trim().length > 0 && column.length <= 28,
+      )
+    )
+      return null
+    return { id: value.id, title: value.title.slice(0, 60), columns: ensureActionItemsAtLast(value.columns as string[]) }
   } catch {
     return null
   }
 })()
 const sharedBoardId = routeParams.get('board')?.trim() || boardRouteDetails?.id || ''
+
 const initialBoard: BoardData = {
-  id: 'sprint-24',
-  title: 'Sprint 24 retrospective',
+  id: 'sprint-retro',
+  title: 'Sprint Retrospective',
   updatedAt: Date.now(),
   retentionDays: 0,
   columns: [
-    { id: 'went-well', title: 'What went well', color: 'mint' },
-    { id: 'to-improve', title: 'What can improve', color: 'peach' },
-    { id: 'actions', title: 'Action items', color: 'lavender' },
+    { id: 'col-well', title: 'What went well', color: 'mint' },
+    { id: 'col-wrong', title: 'What went wrong', color: 'peach' },
+    { id: 'col-kudos', title: 'Kudos & Shoutouts', color: 'blue' },
+    { id: 'col-actions', title: 'Action items', color: 'lavender' },
   ],
-  notes: [
-    { id: 'n-1', columnId: 'went-well', text: 'The new onboarding flow shipped smoothly. Great pairing across the team!', author: 'Olivia', anonymous: false, votes: 3, voteIds: ['n1-v1', 'n1-v2', 'n1-v3'], reactions: {}, createdAt: 0 },
-    { id: 'n-2', columnId: 'went-well', text: 'Daily check-ins kept everyone unblocked this sprint.', author: 'Sam', anonymous: false, votes: 1, voteIds: ['n2-v1'], reactions: {}, createdAt: 0 },
-    { id: 'n-3', columnId: 'went-well', text: 'Loved seeing design and engineering collaborate early on the search experience.', author: 'Anonymous', anonymous: true, votes: 2, voteIds: ['n3-v1', 'n3-v2'], reactions: {}, createdAt: 0 },
-    { id: 'n-4', columnId: 'to-improve', text: 'A couple of late scope changes made it tricky to estimate the last story.', author: 'Jamie', anonymous: false, votes: 2, voteIds: ['n4-v1', 'n4-v2'], reactions: {}, createdAt: 0 },
-    { id: 'n-5', columnId: 'to-improve', text: 'Let’s leave a little more room for code review before the release cut.', author: 'Anonymous', anonymous: true, votes: 1, voteIds: ['n5-v1'], reactions: {}, createdAt: 0 },
-    { id: 'n-6', columnId: 'actions', text: 'Add acceptance criteria to tickets before sprint planning.', author: 'Riley', anonymous: false, votes: 4, voteIds: ['n6-v1', 'n6-v2', 'n6-v3', 'n6-v4'], reactions: {}, createdAt: 0 },
-    { id: 'n-7', columnId: 'actions', text: 'Try a 15-minute mid-sprint check on cross-team dependencies.', author: 'Alex', anonymous: false, votes: 2, voteIds: ['n7-v1', 'n7-v2'], reactions: {}, createdAt: 0 },
-  ],
+  notes: [],
   locked: false,
-  timer: { durationMinutes: 15, remainingSeconds: 15 * 60, endsAt: null },
+  timer: { durationMinutes: 10, remainingSeconds: 10 * 60, endsAt: null },
+}
+
+function initials(name: string): string {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || '?'
+}
+
+const AVATAR_PALETTES = [
+  'bg-primary-fixed text-on-primary-fixed',
+  'bg-secondary-fixed text-on-secondary-fixed',
+  'bg-tertiary-fixed text-on-tertiary-fixed',
+  'bg-primary-container text-on-primary-container',
+  'bg-secondary-container text-on-secondary-container',
+  'bg-tertiary-container text-on-tertiary-container',
+]
+
+function getAuthorAvatarClass(name: string): string {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) & 0xffffffff
+  }
+  return AVATAR_PALETTES[Math.abs(hash) % AVATAR_PALETTES.length] || 'bg-surface-container-high text-on-surface'
+}
+
+function relativeTime(timestamp: number, now: number): string {
+  if (!timestamp) return ''
+  const elapsed = Math.max(0, now - timestamp)
+  if (elapsed < 60_000) return 'just now'
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`
+  return `${Math.floor(elapsed / 86_400_000)}d ago`
+}
+
+function playTimerChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15)
+    gain.gain.setValueAtTime(0.15, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.8)
+  } catch {
+    // Autoplay or audio context unavailable
+  }
+}
+
+interface ColumnMeta {
+  emoji: string
+  subtitle: string
+  placeholder: string
+  gradient: string
+  countBadge: string
+  buttonBg: string
+}
+
+function getColumnMeta(title: string, index: number): ColumnMeta {
+  const lower = title.toLowerCase()
+  if (lower.includes('well') || lower.includes('good') || lower.includes('win')) {
+    return {
+      emoji: '🌿',
+      subtitle: 'Wins, accelerators & positive energy',
+      placeholder: 'Write a win, shoutout or positive momentum...',
+      gradient: 'from-secondary-fixed-dim via-secondary to-secondary-fixed',
+      countBadge: 'bg-secondary-fixed/40 text-on-secondary-fixed',
+      buttonBg: 'bg-secondary text-on-secondary',
+    }
+  }
+  if (lower.includes('wrong') || lower.includes('better') || lower.includes('bad') || lower.includes('problem')) {
+    return {
+      emoji: '🍊',
+      subtitle: 'Friction, pain points & bottlenecks',
+      placeholder: 'What went wrong or caused friction...',
+      gradient: 'from-tertiary-fixed via-tertiary to-tertiary-container',
+      countBadge: 'bg-tertiary-fixed text-on-tertiary-fixed',
+      buttonBg: 'bg-tertiary text-on-tertiary',
+    }
+  }
+  if (lower.includes('kudos') || lower.includes('shout') || lower.includes('thanks') || lower.includes('praise')) {
+    return {
+      emoji: '✨',
+      subtitle: 'Appreciation & celebrating wins',
+      placeholder: 'Give props or thank a teammate...',
+      gradient: 'from-primary-fixed via-secondary-fixed to-primary-container',
+      countBadge: 'bg-primary-fixed text-on-primary-fixed',
+      buttonBg: 'bg-primary-container text-on-primary-container',
+    }
+  }
+  if (lower.includes('action') || lower.includes('next') || lower.includes('todo') || lower.includes('task')) {
+    return {
+      emoji: '⚡',
+      subtitle: 'Commitments & tangible improvements',
+      placeholder: 'Add an actionable improvement or next step...',
+      gradient: 'from-primary-fixed-dim via-primary to-primary-container',
+      countBadge: 'bg-primary-fixed text-on-primary-fixed',
+      buttonBg: 'bg-primary text-on-primary',
+    }
+  }
+  const fallbackPalettes: ColumnMeta[] = [
+    {
+      emoji: '💡',
+      subtitle: 'Ideas and discussions',
+      placeholder: 'Share a thought...',
+      gradient: 'from-secondary-fixed-dim via-secondary to-secondary-fixed',
+      countBadge: 'bg-secondary-fixed/40 text-on-secondary-fixed',
+      buttonBg: 'bg-secondary text-on-secondary',
+    },
+    {
+      emoji: '📌',
+      subtitle: 'Notes and points',
+      placeholder: 'Share a note...',
+      gradient: 'from-tertiary-fixed via-tertiary to-tertiary-container',
+      countBadge: 'bg-tertiary-fixed text-on-tertiary-fixed',
+      buttonBg: 'bg-tertiary text-on-tertiary',
+    },
+    {
+      emoji: '🎯',
+      subtitle: 'Focus topics',
+      placeholder: 'Write your point...',
+      gradient: 'from-primary-fixed via-secondary-fixed to-primary-container',
+      countBadge: 'bg-primary-fixed text-on-primary-fixed',
+      buttonBg: 'bg-primary text-on-primary',
+    },
+  ]
+  return fallbackPalettes[index % fallbackPalettes.length]!
+}
+
+function readBoards(): BoardData[] {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('together-retro-boards-v4')
+    if (saved) {
+      const parsed: unknown = JSON.parse(saved)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return (parsed as BoardData[]).map((b) => {
+          const timer = !b.timer || b.timer.endsAt === null || b.timer.durationMinutes === 15
+            ? { durationMinutes: 10, remainingSeconds: 10 * 60, endsAt: null }
+            : b.timer
+          return {
+            ...b,
+            timer,
+            columns: ensureActionItemsAtLast((b.columns || []).map((col) => {
+              const lower = col.title.toLowerCase()
+              if (lower === 'could be better' || col.title === 'What Went Wrong') {
+                return { ...col, title: 'What went wrong' }
+              }
+              return col
+            })),
+          }
+        })
+      }
+    }
+  } catch (error) {
+    console.warn('Could not restore saved retro boards.', error)
+  }
+  return []
 }
 
 function createBoardData(title: string, columnTitles: string[]): BoardData {
+  const columnPalette: RetroColumn['color'][] = ['mint', 'peach', 'lavender', 'blue', 'yellow']
+  const orderedTitles = ensureActionItemsAtLast(columnTitles)
   return {
     ...initialBoard,
     id: crypto.randomUUID(),
     title,
     updatedAt: Date.now(),
     retentionDays: 0,
-    columns: columnTitles.map((columnTitle, index) => ({
-      id: crypto.randomUUID(),
-      title: columnTitle,
-      color: ['mint', 'peach', 'lavender', 'blue', 'yellow'][index] as Column['color'],
+    columns: orderedTitles.map((columnTitle, index) => ({
+      id: `col-${index + 1}-${columnTitle.toLowerCase().replace(/[^a-z0-9]/g, '') || index}`,
+      title: columnTitle.toLowerCase() === 'could be better' || columnTitle === 'What Went Wrong' ? 'What went wrong' : columnTitle,
+      color: columnPalette[index % columnPalette.length] as RetroColumn['color'],
     })),
     notes: [],
     locked: false,
+    timer: { durationMinutes: 10, remainingSeconds: 10 * 60, endsAt: null },
   }
 }
 
@@ -88,11 +269,11 @@ const emptyBoard: BoardData = {
   ...initialBoard,
   id: sharedBoardId || 'joining-board',
   title: boardRouteDetails?.title || 'Connecting to board…',
-  columns: (boardRouteDetails?.columns || DEFAULT_COLUMN_TITLES).map((title, index) => ({
-    id: `joining-column-${index}-${title}`,
+  columns: ensureActionItemsAtLast((boardRouteDetails?.columns || DEFAULT_COLUMN_TITLES).map((title, index) => ({
+    id: `joining-column-${index}-${title.toLowerCase().replace(/[^a-z0-9]/g, '') || index}`,
     title,
-    color: ['mint', 'peach', 'lavender', 'blue', 'yellow'][index] as Column['color'],
-  })),
+    color: (['mint', 'peach', 'lavender', 'blue', 'yellow'] as RetroColumn['color'][])[index % 5] as RetroColumn['color'],
+  }))),
   notes: [],
   locked: false,
 }
@@ -105,11 +286,11 @@ function boardFromRouteDetails(): BoardData | undefined {
     title: boardRouteDetails.title,
     updatedAt: Date.now(),
     notes: [],
-    columns: boardRouteDetails.columns.map((title, index) => ({
+    columns: ensureActionItemsAtLast(boardRouteDetails.columns.map((title, index) => ({
       id: `${boardRouteDetails.id}-column-${index}`,
       title,
-      color: ['mint', 'peach', 'lavender', 'blue', 'yellow'][index] as Column['color'],
-    })),
+      color: (['mint', 'peach', 'lavender', 'blue', 'yellow'] as RetroColumn['color'][])[index % 5] as RetroColumn['color'],
+    }))),
   }
 }
 
@@ -117,162 +298,78 @@ function stableHostPeerId(boardId: string): string {
   return `retro-${boardId}`
 }
 
-function getBoardTone(title: string): number {
-  let hash = 0
-  for (const character of title.trim().toLowerCase()) {
-    hash = (hash * 31 + character.charCodeAt(0)) | 0
-  }
-  return Math.abs(hash) % 6
-}
-
 function updateBoardUrl(board: BoardData, role: 'owner' | 'invite', hostPeerId: string): string {
   const url = new URL(window.location.href)
   url.search = ''
   url.searchParams.set(role === 'owner' ? 'owner' : 'join', hostPeerId)
   url.searchParams.set('board', board.id)
-  url.searchParams.set('setup', JSON.stringify({
-    id: board.id,
-    title: board.title,
-    columns: board.columns.map((column) => column.title),
-  }))
+  url.searchParams.set(
+    'setup',
+    JSON.stringify({
+      id: board.id,
+      title: board.title,
+      columns: board.columns.map((column) => column.title),
+    }),
+  )
   return url.toString()
 }
 
-const icons: Record<IconName, ReactNode> = {
-  spark: <><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z" /><path d="m19 14 1.1 2.2L22 17l-1.9.8L19 20l-.8-2.2L16 17l2.2-.8L19 14Z" /></>,
-  plus: <><path d="M12 5v14M5 12h14" /></>,
-  users: <><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="10" cy="7" r="4" /><path d="M20 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" /></>,
-  timer: <><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2.5 1.5M9 2h6M12 2v3" /></>,
-  download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5M12 15V3" /></>,
-  lock: <><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>,
-  unlock: <><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 7.5-2" /></>,
-  eye: <><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
-  moon: <path d="M20.8 13A8.5 8.5 0 0 1 11 3.2 8.5 8.5 0 1 0 20.8 13Z" />,
-  sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
-  settings: <><circle cx="12" cy="12" r="3" /><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.5.9l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.6-.9l-1.6.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-1.9l-1.4-1.2 1.4-2.4 1.7.7a8 8 0 0 1 1.5-.9l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.6.9l1.6-.7 1.4 2.4-1.4 1.2a7 7 0 0 1-.1 1.8Z" /></>,
-  copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>,
-  check: <path d="m5 12 4 4L19 6" />,
-  close: <><path d="m18 6-12 12M6 6l12 12" /></>,
-  send: <><path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13" /></>,
-  arrow: <><path d="M7 17 17 7M7 7h10v10" /></>,
-  edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></>,
-  trash: <><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m4 4v6m6-6v6" /></>,
-  heart: <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z" />,
-  link: <><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7" /></>,
-  refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.6 9a7 7 0 0 1 11.6-2L20 12M4 12l2.8 5a7 7 0 0 0 11.6-2" /></>,
-}
+const AVAILABLE_REACTIONS = ['👍', '❤️', '🎉', '🔥', '👏'] as const
 
-function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icons[name]}</svg>
-}
-
-function readBoards(): BoardData[] {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved) {
-      const parsed: unknown = JSON.parse(saved)
-      if (Array.isArray(parsed)) {
-      const validBoards = parsed.map(normalizeBoard).filter((board): board is BoardData => board !== null)
-      return removeExpiredBoards(validBoards)
-      }
-    }
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
-    if (legacy) {
-      const parsed: unknown = JSON.parse(legacy)
-      if (typeof parsed === 'object' && parsed !== null && 'columns' in parsed && Array.isArray(parsed.columns) && 'notes' in parsed && Array.isArray(parsed.notes) && 'locked' in parsed && typeof parsed.locked === 'boolean') {
-      const migrated = normalizeBoard({ ...initialBoard, columns: parsed.columns, notes: parsed.notes, locked: parsed.locked, updatedAt: Date.now() })
-      if (migrated) return [migrated]
-      }
-    }
-  } catch (error) {
-    console.warn('Could not restore saved retro boards.', error)
-  }
-  return []
-}
-
-function normalizeBoard(value: unknown): BoardData | null {
-  if (typeof value !== 'object' || value === null || !('notes' in value) || !Array.isArray(value.notes)) return null
-  const normalized = {
-    ...value,
-    timer: 'timer' in value && isRetroTimer(value.timer)
-      ? value.timer
-      : { durationMinutes: 15, remainingSeconds: 15 * 60, endsAt: null },
-    notes: value.notes.map((note: unknown) => {
-      if (typeof note !== 'object' || note === null) return note
-      const noteRecord = note as Record<string, unknown>
-      return {
-        ...noteRecord,
-        createdAt: typeof noteRecord.createdAt === 'number' ? noteRecord.createdAt : 0,
-        reactions: typeof noteRecord.reactions === 'object' && noteRecord.reactions !== null && !Array.isArray(noteRecord.reactions)
-          ? noteRecord.reactions
-          : {},
-        voteIds: Array.isArray(noteRecord.voteIds)
-          ? noteRecord.voteIds
-          : Array.from({ length: typeof noteRecord.votes === 'number' ? noteRecord.votes : 0 }, (_, index) => `${String(noteRecord.id)}-legacy-vote-${index}`),
-      }
-    }),
-  }
-  return isBoardData(normalized) ? normalized : null
-}
-
-function isRetroTimer(value: unknown): value is RetroTimer {
-  return typeof value === 'object' && value !== null &&
-    'durationMinutes' in value && typeof value.durationMinutes === 'number' && TIMER_PRESETS.includes(value.durationMinutes) &&
-    'remainingSeconds' in value && typeof value.remainingSeconds === 'number' &&
-    Number.isSafeInteger(value.remainingSeconds) && value.remainingSeconds >= 0 &&
-    'endsAt' in value && (value.endsAt === null || (typeof value.endsAt === 'number' && Number.isFinite(value.endsAt)))
-}
-
-function removeExpiredBoards(boards: BoardData[]): BoardData[] {
-  const now = Date.now()
-  return boards.filter((board) => board.retentionDays === 0 || now - board.updatedAt < board.retentionDays * 24 * 60 * 60 * 1000)
-}
-
-function isNote(value: unknown): value is Note {
-  if (typeof value !== 'object' || value === null) return false
-  return 'id' in value && typeof value.id === 'string' &&
-    'columnId' in value && typeof value.columnId === 'string' &&
-    'text' in value && typeof value.text === 'string' &&
-    value.text.trim().length > 0 && value.text.length <= 500 &&
-    'author' in value && typeof value.author === 'string' &&
-    'anonymous' in value && typeof value.anonymous === 'boolean' &&
-    'votes' in value && typeof value.votes === 'number' && Number.isSafeInteger(value.votes) && value.votes >= 0 &&
-    'voteIds' in value && Array.isArray(value.voteIds) && value.voteIds.every((id) => typeof id === 'string') &&
-    'reactions' in value && typeof value.reactions === 'object' && value.reactions !== null &&
-    Object.entries(value.reactions).every(([emoji, actors]) =>
-      NOTE_REACTIONS.includes(emoji as typeof NOTE_REACTIONS[number]) &&
-      Array.isArray(actors) && actors.every((actor) => typeof actor === 'string'),
-    ) &&
-    'createdAt' in value && typeof value.createdAt === 'number'
-}
-
-function isBoardData(value: unknown): value is BoardData {
-  if (typeof value !== 'object' || value === null || !('columns' in value) ||
-    !('notes' in value) || !('locked' in value) || typeof value.locked !== 'boolean' ||
-    !('timer' in value) || !isRetroTimer(value.timer) ||
-    !('id' in value) || typeof value.id !== 'string' ||
-    !('title' in value) || typeof value.title !== 'string' ||
-    !('updatedAt' in value) || typeof value.updatedAt !== 'number' ||
-    !('retentionDays' in value) || ![0, 7, 30, 90].includes(Number(value.retentionDays))) return false
-  const columns = value.columns
-  const notes = value.notes
-  if (!Array.isArray(columns) || !Array.isArray(notes)) return false
-  return columns.length > 0 && columns.length <= 5 &&
-    columns.every((column: unknown) =>
-    typeof column === 'object' && column !== null &&
-    'id' in column && typeof column.id === 'string' &&
-    'title' in column && typeof column.title === 'string' &&
-    'color' in column && ['mint', 'peach', 'lavender', 'blue', 'yellow'].includes(String(column.color)),
-    ) && notes.every((note: unknown) => isNote(note) && columns.some((column: unknown) => typeof column === 'object' && column !== null && 'id' in column && column.id === note.columnId))
+function ReactionPickerPopover({
+  noteId,
+  reactions,
+  currentActorId,
+  onToggleReaction,
+  onClose,
+  align = 'left',
+}: {
+  noteId: string
+  reactions: Record<string, string[]>
+  currentActorId: string
+  onToggleReaction: (noteId: string, emoji: string) => void
+  onClose: () => void
+  align?: 'left' | 'right'
+}) {
+  return (
+    <div
+      className={`absolute bottom-full mb-2 z-50 flex items-center gap-1.5 p-1.5 rounded-2xl bg-surface-container-lowest/95 backdrop-blur-md border border-outline-variant/40 shadow-xl whitespace-nowrap ${
+        align === 'right' ? 'right-0' : 'left-0'
+      }`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {AVAILABLE_REACTIONS.map((emoji) => {
+        const actors = reactions[emoji] ?? []
+        const active = actors.includes(currentActorId)
+        return (
+          <button
+            key={emoji}
+            type="button"
+            onClick={() => {
+              onToggleReaction(noteId, emoji)
+              onClose()
+            }}
+            className={`w-8 h-8 rounded-full flex items-center justify-center text-base transition-transform hover:scale-125 cursor-pointer ${
+              active ? 'bg-primary-fixed ring-1 ring-primary' : 'hover:bg-surface-container'
+            }`}
+            title={`React with ${emoji}`}
+          >
+            {emoji}
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 function App() {
   const [boards, setBoards] = useState<BoardData[]>(readBoards)
-  const [activeBoardId, setActiveBoardId] = useState(() => sharedBoardId || localStorage.getItem(ACTIVE_BOARD_KEY) || '')
+  const [activeBoardId, setActiveBoardId] = useState(() => sharedBoardId || localStorage.getItem(ACTIVE_BOARD_KEY) || initialBoard.id)
   const board = boards.find((item) => item.id === activeBoardId) ??
     boardFromRouteDetails() ??
     (!joinPeerId && !ownerPeerId ? boards[0] : undefined) ??
     (joinPeerId || ownerPeerId ? emptyBoard : initialBoard)
+
   const setBoard = (update: SetStateAction<BoardData>) => {
     setBoards((current) => current.map((savedBoard) => {
       if (savedBoard.id !== board.id) return savedBoard
@@ -280,22 +377,30 @@ function App() {
       return next === savedBoard ? savedBoard : { ...next, updatedAt: Date.now() }
     }))
   }
+
   const [modal, setModal] = useState<Modal>(joinPeerId ? 'guest-name' : null)
-  const [dark, setDark] = useState(() => localStorage.getItem('together-retro-dark') === 'true')
-  const [masked, setMasked] = useState(false)
-  const [timerNow, setTimerNow] = useState(0)
-  const [draft, setDraft] = useState('')
+  const [timerNow, setTimerNow] = useState(Date.now)
+  const [inlineDrafts, setInlineDrafts] = useState<Record<string, string>>({})
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({})
+  const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({})
+  const [sortByVotes, setSortByVotes] = useState<Record<string, boolean>>({})
   const [anonymous, setAnonymous] = useState(false)
-  const [noteColumn, setNoteColumn] = useState('')
   const [participantName, setParticipantName] = useState(() => localStorage.getItem('together-retro-name') || '')
   const [reactionActorId] = useState(getReactionActorId)
+  const [reactionPickerNoteId, setReactionPickerNoteId] = useState('')
   const [guestName, setGuestName] = useState(() => localStorage.getItem('together-retro-name') || '')
   const [pendingPeerId, setPendingPeerId] = useState(joinPeerId)
   const [editName, setEditName] = useState(() => localStorage.getItem('together-retro-name') || 'You')
   const [editBoardTitle, setEditBoardTitle] = useState(board.title)
   const [newBoardTitle, setNewBoardTitle] = useState('')
-  const [transferTarget, setTransferTarget] = useState('')
+  const [newBoardColumns, setNewBoardColumns] = useState<string[]>(DEFAULT_COLUMN_TITLES)
+  const [boardCreatedThisVisit, setBoardCreatedThisVisit] = useState(false)
   const [notice, setNotice] = useState('')
+  const chimePlayedRef = useRef(false)
+
+  // P2P State
+  type PeerRole = 'host' | 'guest'
+  type PeerState = 'idle' | 'connecting' | 'ready' | 'connected' | 'disconnected' | 'failed'
   const [peerState, setPeerState] = useState<PeerState>(joinPeerId || ownerPeerId ? 'connecting' : 'idle')
   const [peerCount, setPeerCount] = useState(0)
   const [sharedBoardReceived, setSharedBoardReceived] = useState(!joinPeerId)
@@ -306,14 +411,19 @@ function App() {
   const [signalResult, setSignalResult] = useState('')
   const [signalStep, setSignalStep] = useState<'start' | 'offer'>('start')
   const [inviteCopied, setInviteCopied] = useState(false)
-  const [newBoardColumns, setNewBoardColumns] = useState(DEFAULT_COLUMN_TITLES)
-  const [boardCreatedThisVisit, setBoardCreatedThisVisit] = useState(false)
+
   const roomRef = useRef<P2PYjsRoom | null>(null)
   const autoHostStartedRef = useRef(false)
-  const startOwnerRoomRef = useRef<(ownerBoard: BoardData) => Promise<boolean>>(async () => false)
+  const startOwnerRoomRef = useRef<(ownerBoard: BoardData, displayName?: string) => Promise<boolean>>(async () => false)
   const announcedPeersRef = useRef(new Set<string>())
   const boardRef = useRef(board)
   const toastTimeout = useRef<number | undefined>(undefined)
+
+  const toast = (message: string) => {
+    window.clearTimeout(toastTimeout.current)
+    setNotice(message)
+    toastTimeout.current = window.setTimeout(() => setNotice(''), 2800)
+  }
 
   useEffect(() => {
     boardRef.current = board
@@ -321,7 +431,7 @@ function App() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(boards))
       localStorage.setItem(ACTIVE_BOARD_KEY, board.id)
     } catch (error) {
-      console.warn('Could not save retro boards in this browser.', error)
+      console.warn('Could not save retro boards locally.', error)
     }
     if (roomRef.current) {
       if (isHost || roomRef.current.peers.length > 0) {
@@ -338,70 +448,206 @@ function App() {
   }, [board, boards, peerState, isHost])
 
   useEffect(() => {
-    const cleanup = window.setInterval(() => {
-      const remaining = removeExpiredBoards(boards)
-      if (remaining.length === boards.length && remaining.every((item, index) => item.id === boards[index]?.id)) return
-      setBoards(remaining)
-      if (!remaining.some((item) => item.id === activeBoardId)) {
-        setActiveBoardId(remaining[0]?.id ?? '')
-        roomRef.current?.destroy()
-        roomRef.current = null
-        setPeerState('idle')
-      }
-    }, 60_000)
-    return () => window.clearInterval(cleanup)
-  }, [activeBoardId, boards])
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-    localStorage.setItem('together-retro-dark', String(dark))
-  }, [dark])
-
-  useEffect(() => {
-    localStorage.setItem('together-retro-name', participantName)
-  }, [participantName])
-
-  useEffect(() => {
-    const endsAt = board.timer.endsAt
-    if (endsAt === null) return
-    const initialRefresh = window.setTimeout(() => setTimerNow(Date.now()), 0)
-    const timer = window.setInterval(() => {
-      const now = Date.now()
-      setTimerNow(now)
-      if (now >= endsAt) window.clearInterval(timer)
-    }, 250)
-    return () => {
-      window.clearTimeout(initialRefresh)
-      window.clearInterval(timer)
-    }
-  }, [board.timer.endsAt])
-
-  useEffect(() => () => {
-    roomRef.current?.destroy()
-    window.clearTimeout(toastTimeout.current)
+    const timerInterval = window.setInterval(() => {
+      setTimerNow(Date.now())
+    }, 1000)
+    return () => window.clearInterval(timerInterval)
   }, [])
 
-  const toast = (message: string) => {
-    setNotice(message)
-    window.clearTimeout(toastTimeout.current)
-    toastTimeout.current = window.setTimeout(() => setNotice(''), 3000)
+  useEffect(() => {
+    if (!reactionPickerNoteId) return
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('.reaction-picker-container')) {
+        setReactionPickerNoteId('')
+      }
+    }
+    document.addEventListener('click', handleClickOutside)
+    return () => document.removeEventListener('click', handleClickOutside)
+  }, [reactionPickerNoteId])
+
+  const focusComposer = (colId: string) => {
+    const col = document.getElementById(colId)
+    if (col) {
+      col.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      const textarea = col.querySelector<HTMLTextAreaElement>('textarea')
+      if (textarea) {
+        textarea.focus()
+        textarea.classList.add('ring-2', 'ring-primary')
+        setTimeout(() => textarea.classList.remove('ring-2', 'ring-primary'), 1000)
+      }
+    }
   }
 
-  const handleOwnerChanged = (peerId: string, displayName: string) => {
-    const room = roomRef.current
-    const becameOwner = room?.id === peerId
-    setIsHost(becameOwner)
-    setSignalResult(peerId)
-    setSignalStep('offer')
-    if (room) {
-      window.history.replaceState(null, '', updateBoardUrl(
-        boardRef.current,
-        becameOwner ? 'owner' : 'invite',
-        peerId,
-      ))
+  const triggerConfetti = (e?: React.MouseEvent) => {
+    if (e?.currentTarget) {
+      const btn = e.currentTarget as HTMLElement
+      btn.classList.add('scale-125')
+      setTimeout(() => btn.classList.remove('scale-125'), 300)
     }
-    toast(becameOwner ? 'You are now the board owner.' : `${displayName} is now the board owner.`)
+    toast('Team appreciation sent! 🎉')
   }
+
+  // Voting micro-interaction
+  const toggleVote = (noteId: string) => {
+    if (board.locked) return
+    setBoard((current) => ({
+      ...current,
+      notes: current.notes.map((note) => {
+        if (note.id !== noteId) return note
+        const hasVoted = note.voteIds.includes(reactionActorId)
+        return {
+          ...note,
+          votes: hasVoted ? Math.max(0, note.votes - 1) : note.votes + 1,
+          voteIds: hasVoted
+            ? note.voteIds.filter((id) => id !== reactionActorId)
+            : [...note.voteIds, reactionActorId],
+        }
+      }),
+    }))
+  }
+
+  const toggleReaction = (noteId: string, emoji: string) => {
+    if (board.locked) return
+    setBoard((current) => ({
+      ...current,
+      notes: current.notes.map((note) => {
+        if (note.id !== noteId) return note
+        const actors = note.reactions[emoji] ?? []
+        const alreadyReacted = actors.includes(reactionActorId)
+        return {
+          ...note,
+          reactions: {
+            ...note.reactions,
+            [emoji]: alreadyReacted
+              ? actors.filter((actorId) => actorId !== reactionActorId)
+              : [...actors, reactionActorId],
+          },
+        }
+      }),
+    }))
+  }
+
+  const deleteNote = (noteId: string) => {
+    if (board.locked) return
+    setBoard((current) => ({
+      ...current,
+      notes: current.notes.filter((n) => n.id !== noteId),
+    }))
+    toast('Note deleted.')
+  }
+
+  const deleteComment = (noteId: string, commentId: string) => {
+    if (board.locked) return
+    setBoard((current) => ({
+      ...current,
+      notes: current.notes.map((note) =>
+        note.id === noteId
+          ? { ...note, comments: note.comments.filter((c) => c.id !== commentId) }
+          : note,
+      ),
+    }))
+  }
+
+  const addInlineNote = (event: FormEvent, columnId: string) => {
+    event.preventDefault()
+    const text = inlineDrafts[columnId]?.trim()
+    if (!text || board.locked) return
+    const newNote: Note = {
+      id: crypto.randomUUID(),
+      columnId,
+      text,
+      author: anonymous ? 'Anonymous' : (participantName.trim() || 'Anonymous'),
+      anonymous,
+      votes: 0,
+      voteIds: [],
+      reactions: {},
+      createdAt: timerNow,
+      comments: [],
+      done: false,
+    }
+    setBoard((current) => ({ ...current, notes: [...current.notes, newNote] }))
+    setInlineDrafts((current) => ({ ...current, [columnId]: '' }))
+    toast('Your thought has been posted.')
+  }
+
+  const addComment = (event: FormEvent, noteId: string) => {
+    event.preventDefault()
+    const text = commentDrafts[noteId]?.trim()
+    if (!text || board.locked) return
+    const comment: RetroComment = {
+      id: crypto.randomUUID(),
+      author: anonymous ? 'Anonymous' : (participantName.trim() || 'Anonymous'),
+      text,
+      createdAt: timerNow,
+    }
+    setBoard((current) => ({
+      ...current,
+      notes: current.notes.map((note) => note.id === noteId ? { ...note, comments: [...note.comments, comment] } : note),
+    }))
+    setCommentDrafts((current) => ({ ...current, [noteId]: '' }))
+  }
+
+  const timerSeconds = board.timer.endsAt === null
+    ? board.timer.remainingSeconds
+    : Math.max(0, Math.ceil((board.timer.endsAt - timerNow) / 1000))
+  const timerRunning = board.timer.endsAt !== null && timerSeconds > 0
+  const displayTime = `${String(Math.floor(timerSeconds / 60)).padStart(2, '0')}:${String(timerSeconds % 60).padStart(2, '0')}`
+  const totalTimerSeconds = Math.max(1, board.timer.durationMinutes * 60, timerSeconds)
+  const timerProgress = Math.min(1, Math.max(0, timerSeconds / totalTimerSeconds))
+  const strokeDashoffset = Number((94.2 * (1 - timerProgress)).toFixed(1))
+  const progressPercent = Math.round(timerProgress * 100)
+  const minutesLeft = Math.ceil(timerSeconds / 60)
+  const timeLeftLabel = timerSeconds <= 0 ? '0m left' : timerSeconds < 60 ? `${timerSeconds}s left` : `${minutesLeft}m left`
+
+  const addTimerMinutes = (minutes: number) => {
+    const addSeconds = minutes * 60
+    setBoard((current) => {
+      const curSeconds = current.timer.endsAt === null
+        ? current.timer.remainingSeconds
+        : Math.max(0, Math.ceil((current.timer.endsAt - Date.now()) / 1000))
+      const newSeconds = curSeconds + addSeconds
+      const newDuration = Math.max(current.timer.durationMinutes, Math.ceil(newSeconds / 60))
+      return {
+        ...current,
+        timer: {
+          ...current.timer,
+          durationMinutes: newDuration,
+          remainingSeconds: newSeconds,
+          endsAt: current.timer.endsAt !== null ? Date.now() + newSeconds * 1000 : null,
+        },
+      }
+    })
+    toast(`Added +${minutes}m to the timer.`)
+  }
+
+  const toggleTimer = () => {
+    if (timerRunning) {
+      setBoard((current) => ({
+        ...current,
+        timer: {
+          ...current.timer,
+          remainingSeconds: Math.max(0, Math.ceil(((current.timer.endsAt ?? Date.now()) - Date.now()) / 1000)),
+          endsAt: null,
+        },
+      }))
+      return
+    }
+    const seconds = timerSeconds > 0 ? timerSeconds : board.timer.durationMinutes * 60
+    setBoard((current) => ({
+      ...current,
+      timer: { ...current.timer, remainingSeconds: seconds, endsAt: Date.now() + seconds * 1000 },
+    }))
+  }
+
+  useEffect(() => {
+    if (timerRunning) {
+      chimePlayedRef.current = false
+    } else if (board.timer.endsAt !== null && timerSeconds === 0 && !chimePlayedRef.current) {
+      chimePlayedRef.current = true
+      playTimerChime()
+    }
+  }, [timerRunning, timerSeconds, board.timer.endsAt])
 
   const observeRoom = (room: P2PYjsRoom, owner: boolean) => {
     observeRetroBoard(room.doc, (remoteBoard) => {
@@ -409,10 +655,14 @@ function App() {
         toast('This invite does not match the board ID in its link.')
         return
       }
-      setBoards((current) => current.some((item) => item.id === remoteBoard.id)
-        ? current.map((item) => item.id === remoteBoard.id ? remoteBoard : item)
-        : [...current, remoteBoard])
-      setActiveBoardId(remoteBoard.id)
+      const normalizedBoard: BoardData = {
+        ...remoteBoard,
+        columns: ensureActionItemsAtLast(remoteBoard.columns),
+      }
+      setBoards((current) => current.some((item) => item.id === normalizedBoard.id)
+        ? current.map((item) => item.id === normalizedBoard.id ? normalizedBoard : item)
+        : [...current, normalizedBoard])
+      setActiveBoardId(normalizedBoard.id)
       setSharedBoardReceived(true)
       setPeerState(room.peers.length > 0 ? 'connected' : owner ? 'ready' : 'connecting')
     })
@@ -448,15 +698,17 @@ function App() {
             return next
           })
         },
-        onPeerPresence: (peerId, displayName) => {
-          const name = displayName.trim() || 'Participant'
+        onPeerPresence: (peerId, pName) => {
+          const name = pName.trim() || 'Participant'
           setParticipants((current) => ({ ...current, [peerId]: name }))
           if (!announcedPeersRef.current.has(peerId)) {
             announcedPeersRef.current.add(peerId)
             toast(`${name} joined the board.`)
           }
         },
-        onOwnerChanged: handleOwnerChanged,
+        onOwnerChanged: (_newOwnerPeerId, newOwnerName) => {
+          toast(`${newOwnerName} is now the board owner.`)
+        },
         onError: (error) => toast(error.message),
       })
       roomRef.current = room
@@ -472,6 +724,7 @@ function App() {
       return false
     }
   }
+
   useEffect(() => {
     startOwnerRoomRef.current = startOwnerRoom
   })
@@ -480,7 +733,7 @@ function App() {
     const remotePeerId = peerId.trim()
     if (!/^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,126}[A-Za-z0-9])?$/.test(remotePeerId)) {
       setPeerState('failed')
-      toast('Enter a valid PeerJS host ID.')
+      toast('Invalid room ID.')
       return
     }
     roomRef.current?.destroy()
@@ -502,17 +755,11 @@ function App() {
             delete next[disconnectedPeerId]
             return next
           })
-          const room = roomRef.current
-          if (room && disconnectedPeerId === room.hostPeerId) {
-            const successor = room.electSuccessor()
-            if (successor === room.id) room.promoteToOwner(participantName.trim() || 'Participant')
-          }
         },
-        onPeerPresence: (peerId, name) => {
-          setParticipants((current) => ({ ...current, [peerId]: name.trim() || 'Owner' }))
+        onPeerPresence: (pId, name) => {
+          setParticipants((current) => ({ ...current, [pId]: name.trim() || 'Teammate' }))
         },
         onPeerSynced: () => setPeerState('connected'),
-        onOwnerChanged: handleOwnerChanged,
         onError: (error) => toast(error.message),
       })
       roomRef.current = room
@@ -536,129 +783,92 @@ function App() {
   const confirmGuestName = async (event: FormEvent) => {
     event.preventDefault()
     const name = guestName.trim()
-    if (!name || !pendingPeerId) return
+    if (!name) return
     setParticipantName(name)
-    await connectAsGuest(pendingPeerId, name)
+    localStorage.setItem('together-retro-name', name)
     setModal(null)
+    const targetPeerId = pendingPeerId || joinPeerId
+    if (targetPeerId) {
+      toast(`Joining board as ${name}…`)
+      await connectAsGuest(targetPeerId, name)
+    }
   }
 
-  const copySignal = async () => {
+  const createBoard = async (event: FormEvent) => {
+    event.preventDefault()
+    const title = newBoardTitle.trim()
+    const ownerName = participantName.trim()
+    const columns = ensureActionItemsAtLast(newBoardColumns.map((col) => col.trim()).filter(Boolean).slice(0, 5))
+    if (!title || !ownerName || columns.length < 2) return
+    localStorage.setItem('together-retro-name', ownerName)
+    const nextBoard = createBoardData(title, columns)
+    roomRef.current?.destroy()
+    roomRef.current = null
+    setBoards((current) => [...current, nextBoard])
+    setActiveBoardId(nextBoard.id)
+    setBoardCreatedThisVisit(true)
+    setIsHost(true)
+    setNewBoardTitle('')
+    setModal(null)
+    const roomReady = await startOwnerRoom(nextBoard, ownerName)
+    toast(roomReady ? 'Your board is ready! Share the link to invite your team.' : 'Board created locally.')
+  }
+
+  const addNewBoardColumn = () => {
+    setNewBoardColumns((current) => {
+      if (current.length >= 5) return current
+      const actionIdx = current.findIndex((c) => c.toLowerCase().includes('action'))
+      if (actionIdx !== -1) {
+        const next = [...current]
+        next.splice(actionIdx, 0, '')
+        return next
+      }
+      return [...current, '']
+    })
+  }
+
+  const removeNewBoardColumn = (index: number) => {
+    setNewBoardColumns((current) => (current.length > 2 ? current.filter((_, i) => i !== index) : current))
+  }
+
+  const updateNewBoardColumn = (index: number, title: string) => {
+    setNewBoardColumns((current) => current.map((c, i) => (i === index ? title : c)))
+  }
+
+  const copyInviteDirect = async () => {
     try {
+      const hostId = roomRef.current?.id || signalResult || ownerPeerId || stableHostPeerId(board.id)
+      if (!roomRef.current && isHost) {
+        await startOwnerRoom(board, participantName)
+      }
       const invite = new URL(window.location.href)
       invite.search = ''
-      invite.searchParams.set('join', signalResult)
+      invite.searchParams.set('join', hostId)
       invite.searchParams.set('board', board.id)
-      invite.searchParams.set('setup', JSON.stringify({
-        id: board.id,
-        title: board.title,
-        columns: board.columns.map((column) => column.title),
-      }))
+      invite.searchParams.set(
+        'setup',
+        JSON.stringify({
+          id: board.id,
+          title: board.title,
+          columns: board.columns.map((column) => column.title),
+        }),
+      )
       await navigator.clipboard.writeText(invite.toString())
       setInviteCopied(true)
-      setModal(null)
-      toast('Board invite link copied to clipboard.')
+      toast('Board invite link copied to clipboard!')
     } catch {
-      toast('Copy was blocked by the browser. Share the room ID shown instead.')
+      setModal('connect')
     }
   }
 
-  const addNote = (event: FormEvent) => {
-    event.preventDefault()
-    if (!draft.trim() || board.locked) return
-    const note: Note = {
-      id: crypto.randomUUID(),
-      columnId: noteColumn || board.columns[0]?.id || '',
-      text: draft.trim(),
-      author: anonymous ? 'Anonymous' : (participantName.trim() || 'You'),
-      anonymous,
-      votes: 0,
-      voteIds: [],
-      reactions: {},
-      createdAt: Date.now(),
-    }
-    setBoard((current) => ({ ...current, notes: [...current.notes, note] }))
-    setDraft('')
-    setAnonymous(false)
-    setModal(null)
-    toast('Your thought has been added.')
-  }
-
-  const toggleReaction = (noteId: string, emoji: typeof NOTE_REACTIONS[number]) => {
-    if (board.locked) return
-    setBoard((current) => ({
-      ...current,
-      notes: current.notes.map((note) => {
-        if (note.id !== noteId) return note
-        const actors = note.reactions[emoji] ?? []
-        const alreadyReacted = actors.includes(reactionActorId)
-        return {
-          ...note,
-          reactions: {
-            ...note.reactions,
-            [emoji]: alreadyReacted
-              ? actors.filter((actorId) => actorId !== reactionActorId)
-              : [...actors, reactionActorId],
-          },
-        }
-      }),
-    }))
-  }
-
-  const deleteNote = (noteId: string) => {
-    if (board.locked || (!isHost && board.notes.find((note) => note.id === noteId)?.author !== (participantName.trim() || 'You'))) return
-    setBoard((current) => ({ ...current, notes: current.notes.filter((note) => note.id !== noteId) }))
-  }
-
-  const isGuest = !isHost
-
-  const updateColumn = (id: string, title: string) => {
-    setBoard((current) => ({ ...current, columns: current.columns.map((column) => column.id === id ? { ...column, title } : column) }))
-  }
-
-  const addColumn = () => {
-    if (!isHost) return
-    if (board.columns.length >= 5) return
-    const id = `column-${Date.now()}`
-    setBoard((current) => ({ ...current, columns: [...current.columns, { id, title: 'New column', color: ['mint', 'peach', 'lavender', 'blue', 'yellow'][current.columns.length] as Column['color'] }] }))
-  }
-
-  const timerSeconds = board.timer.endsAt === null
-    ? board.timer.remainingSeconds
-    : Math.max(0, Math.ceil((board.timer.endsAt - timerNow) / 1000))
-  const timerRunning = board.timer.endsAt !== null && timerSeconds > 0
-  const timerDuration = board.timer.durationMinutes
-  const toggleTimer = () => {
-    if (!isHost) return
-    if (timerRunning) {
-      setBoard((current) => ({
-        ...current,
-        timer: {
-          ...current.timer,
-          remainingSeconds: Math.max(0, Math.ceil(((current.timer.endsAt ?? Date.now()) - Date.now()) / 1000)),
-          endsAt: null,
-        },
-      }))
-      return
-    }
-    const seconds = timerSeconds > 0 ? timerSeconds : timerDuration * 60
-    setBoard((current) => ({
-      ...current,
-      timer: { ...current.timer, remainingSeconds: seconds, endsAt: Date.now() + seconds * 1000 },
-    }))
-  }
-  const changeTimerDuration = (durationMinutes: number) => {
-    if (!isHost || !TIMER_PRESETS.includes(durationMinutes)) return
-    setBoard((current) => ({
-      ...current,
-      timer: { durationMinutes, remainingSeconds: durationMinutes * 60, endsAt: null },
-    }))
-  }
-  const resetTimer = () => {
-    if (!isHost) return
-    setBoard((current) => ({
-      ...current,
-      timer: { ...current.timer, remainingSeconds: current.timer.durationMinutes * 60, endsAt: null },
-    }))
+  const resetConnection = () => {
+    roomRef.current?.destroy()
+    roomRef.current = null
+    setPeerCount(0)
+    setPeerState('idle')
+    setSignalStep('start')
+    setSignalText('')
+    setSignalResult('')
   }
 
   const setConnectionOpen = () => {
@@ -674,52 +884,7 @@ function App() {
   const openSettings = () => {
     setEditName(participantName || 'You')
     setEditBoardTitle(board.title)
-    setTransferTarget(Object.keys(participants)[0] ?? '')
     setModal('settings')
-  }
-
-  const resetConnection = () => {
-    roomRef.current?.destroy()
-    roomRef.current = null
-    setPeerCount(0)
-    setPeerState('idle')
-    setSignalStep('start')
-    setSignalText('')
-    setSignalResult('')
-  }
-
-  const createBoard = async (event: FormEvent) => {
-    event.preventDefault()
-    const title = newBoardTitle.trim()
-    const ownerName = participantName.trim()
-    const columns = newBoardColumns.map((column) => column.trim()).filter(Boolean).slice(0, 5)
-    if (!title || !ownerName || columns.length < 2) return
-    const nextBoard = createBoardData(title, columns)
-    roomRef.current?.destroy()
-    roomRef.current = null
-    setBoards((current) => [...current, nextBoard])
-    setActiveBoardId(nextBoard.id)
-    setBoardCreatedThisVisit(true)
-    setIsHost(true)
-    setNewBoardTitle('')
-    setModal(null)
-    setIsHost(true)
-    const roomReady = await startOwnerRoom(nextBoard, ownerName)
-    toast(roomReady
-      ? 'Your board is ready. Share its invite link to bring in participants.'
-      : 'Your board is saved locally, but its invite could not be created.')
-  }
-
-  const addNewBoardColumn = () => {
-    setNewBoardColumns((current) => current.length < 5 ? [...current, ''] : current)
-  }
-
-  const removeNewBoardColumn = (index: number) => {
-    setNewBoardColumns((current) => current.length > 2 ? current.filter((_, itemIndex) => itemIndex !== index) : current)
-  }
-
-  const updateNewBoardColumn = (index: number, title: string) => {
-    setNewBoardColumns((current) => current.map((column, itemIndex) => itemIndex === index ? title : column))
   }
 
   useEffect(() => {
@@ -729,211 +894,986 @@ function App() {
     void startOwnerRoomRef.current(boardRef.current)
   }, [])
 
+  useEffect(() => () => {
+    roomRef.current?.destroy()
+    window.clearTimeout(toastTimeout.current)
+  }, [])
+
   const showSetupPage = !joinPeerId && !ownerPeerId && !boardCreatedThisVisit
   const waitingForSharedBoard = Boolean(joinPeerId) && !sharedBoardReceived
 
-  const displayTime = `${String(Math.floor(timerSeconds / 60)).padStart(2, '0')}:${String(timerSeconds % 60).padStart(2, '0')}`
-
   return (
-    <div className={`app-shell ${dark ? 'dark' : ''}`}>
-      {showSetupPage ? <main className="landing-page">
-        <a className="brand landing-brand" href="/" aria-label="Together home"><span className="brand-mark"><Icon name="spark" size={21} /></span><span>together<span className="brand-period">.</span></span></a>
-        <section className="setup-card">
-          <div className="setup-art"><span className="setup-art-star">✳</span><span className="setup-art-card card-one" /><span className="setup-art-card card-two" /><span className="setup-art-card card-three" /></div>
-          <span className="setup-eyebrow">A FRESH START FOR YOUR TEAM</span>
-          <h1>Make space to<br /><span>look back together.</span></h1>
-          <p className="setup-description">Create a retrospective board. Invite your team with a link, then share thoughts directly peer to peer.</p>
-          <form className="setup-form" onSubmit={(event) => void createBoard(event)}>
-            <label className="field-label" htmlFor="new-board-name">Give your retro a name</label>
-            <input id="new-board-name" className="text-field setup-title-input" value={newBoardTitle} onChange={(event) => setNewBoardTitle(event.target.value)} placeholder="e.g. Sprint 24 retrospective" maxLength={60} required autoFocus />
-            <label className="field-label" htmlFor="owner-name">Your name</label>
-            <input id="owner-name" className="text-field" value={participantName} onChange={(event) => setParticipantName(event.target.value)} placeholder="How should your team identify you?" maxLength={32} required />
-            <div className="setup-columns-label"><span className="field-label">Your columns</span><span>{newBoardColumns.length} of 5</span></div>
-            <div className="setup-column-list">{newBoardColumns.map((column, index) => <div className="setup-column-row" key={index}><span className={`column-swatch column-${['mint', 'peach', 'lavender', 'blue', 'yellow'][index]}`} /><input className="text-field" value={column} onChange={(event) => updateNewBoardColumn(index, event.target.value)} placeholder={`Column ${index + 1}`} maxLength={28} required aria-label={`Column ${index + 1} name`} /><button type="button" className="remove-column" onClick={() => removeNewBoardColumn(index)} disabled={newBoardColumns.length <= 2} aria-label={`Remove column ${index + 1}`}><Icon name="trash" size={15} /></button></div>)}</div>
-            {newBoardColumns.length < 5 && <button className="settings-add-column setup-add-column" type="button" onClick={addNewBoardColumn}><Icon name="plus" size={15} /> Add a column</button>}
-            <button className="button button-primary button-wide setup-submit" type="submit" disabled={!newBoardTitle.trim() || !participantName.trim() || newBoardColumns.some((column) => !column.trim())}><Icon name="spark" size={16} /> Create my board</button>
-          </form>
-          <div className="setup-footnote"><Icon name="lock" size={14} /> No accounts. Your board stays on your device until you share it.</div>
-        </section>
-        {notice && <div className="toast" role="status"><span className="toast-check"><Icon name="check" size={15} /></span>{notice}</div>}
-      </main> : <>
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="Retrospect home">
-          <span className="brand-mark"><Icon name="spark" size={21} /></span>
-          <span>together<span className="brand-period">.</span></span>
-        </a>
-        <div className="topbar-right">
-          <span className="privacy-pill"><span className="privacy-dot" /> Peer-to-peer</span>
-          {isHost && <button className="new-board-button" onClick={() => { setNewBoardTitle(''); setNewBoardColumns(DEFAULT_COLUMN_TITLES); setModal('new-board') }}><Icon name="plus" size={15} /> New board</button>}
-          <button className="icon-button" title={dark ? 'Use light theme' : 'Use dark theme'} onClick={() => setDark(!dark)}><Icon name={dark ? 'sun' : 'moon'} /></button>
-          <button className="avatar avatar-you" onClick={openSettings} title="Edit your profile">{(participantName.trim() || 'Y').slice(0, 1).toUpperCase()}</button>
-        </div>
-      </header>
+    <div className="bg-background font-body-md text-on-surface antialiased min-h-screen flex flex-col">
+      {showSetupPage ? (
+        <main className="min-h-screen bg-background font-body-md text-on-surface flex flex-col items-center justify-center p-4 sm:p-8 relative overflow-hidden">
+          {/* Subtle background glow decorations */}
+          <div className="absolute top-[-10%] left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-primary/5 rounded-full blur-3xl pointer-events-none" />
+          <div className="absolute bottom-[-10%] right-[10%] w-[400px] h-[300px] bg-tertiary-fixed/30 rounded-full blur-3xl pointer-events-none" />
 
-      <main className={`page board-tone-${getBoardTone(board.title)}`}>
-        <nav className="breadcrumbs"><span>Boards</span><span className="crumb-divider">/</span><strong>{board.title}</strong></nav>
+          {/* Brand header */}
+          <div className="flex items-center mb-8 select-none">
+            <img alt="Together Retro Logo" className="h-12 sm:h-14 w-auto object-contain drop-shadow-sm" src={togetherLogo} />
+          </div>
 
-        <section className="board-heading">
-          <div className="board-heading-copy">
-            <div className="eyebrow"><span className="live-dot" /> TEAM RETROSPECTIVE <span className="eyebrow-divider">·</span> SAVED ON THIS DEVICE</div>
-            <h1>{waitingForSharedBoard ? peerState === 'failed' ? 'Could not connect to board' : 'Connecting to board…' : board.title} {!waitingForSharedBoard && <span className="heading-emoji">✳</span>}</h1>
-            <p className="board-subtitle">{waitingForSharedBoard ? peerState === 'failed' ? 'The owner may be offline or the direct connection could not be established.' : 'Waiting for the owner’s board snapshot to arrive over the peer connection.' : 'A little space to celebrate the wins and learn together.'}</p>
-          </div>
-          <div className="board-heading-actions">
-            {waitingForSharedBoard && peerState === 'failed' && <button className="button button-primary" onClick={() => void connectAsGuest(joinPeerId)}><Icon name="refresh" size={16} /> Try again</button>}
-            <div className="people-stack" title={peerState === 'connected' ? `You and ${peerCount} peer${peerCount === 1 ? '' : 's'} connected` : 'You are working solo'}>
-              <span className="avatar avatar-you" title={participantName.trim() || (isHost ? 'Owner' : 'Participant')}>{(participantName.trim() || 'Y').slice(0, 1).toUpperCase()}</span>
-              {Object.entries(participants).slice(0, 3).map(([peerId, name]) => <span className="avatar avatar-peer" key={peerId} title={name} aria-label={name}>{name.slice(0, 1).toUpperCase()}</span>)}
-              {peerCount > 3 && <span className="peer-count-badge">+{peerCount - 3}</span>}
-            </div>
-            <span className={`connection-label ${peerState === 'connected' ? 'online' : ''} ${peerState === 'ready' ? 'ready' : ''}`}><span className="connection-dot" />{peerState === 'connected' ? `${peerCount + 1} here` : peerState === 'ready' ? 'Invite ready' : 'Just you'}</span>
-            <span className={`role-badge ${isHost ? 'owner' : 'participant'}`}>{isHost ? 'Owner' : 'Participant'}</span>
-            <button className={`button ${board.locked ? 'button-soft' : 'button-quiet'}`} onClick={() => { setBoard((current) => ({ ...current, locked: !current.locked })); toast(board.locked ? 'Board unlocked for everyone.' : 'Board locked. No one can make changes.') }} title={board.locked ? 'Unlock board' : 'Lock board'} disabled={!isHost}>
-              <Icon name={board.locked ? 'lock' : 'unlock'} size={16} />{board.locked ? 'Locked' : 'Lock board'}
-            </button>
-            <button className="button button-primary" onClick={() => { setNoteColumn(board.columns[0]?.id ?? ''); setModal('note') }} disabled={board.locked}><Icon name="plus" size={17} /> Add a thought</button>
-            <button className="icon-button more-button" title="Board settings" onClick={openSettings}><Icon name="settings" /></button>
-          </div>
-        </section>
-
-        <section className="toolbar" aria-label="Board tools">
-          <div className="toolbar-left">
-            <button className="toolbar-button" onClick={() => setMasked(!masked)}><Icon name="eye" size={16} />{masked ? 'Reveal notes' : 'Hide notes'}</button>
-            <span className="toolbar-separator" />
-            <button className={`toolbar-button timer-tool ${timerRunning ? 'timer-running' : ''}`} onClick={toggleTimer} disabled={isGuest} title={isGuest ? 'Only the owner can control the timer' : undefined}><Icon name="timer" size={16} /><span>{timerRunning ? 'Pause timer' : timerSeconds < timerDuration * 60 ? 'Resume timer' : 'Start timer'}</span><span className="timer-value">{displayTime}</span></button>
-            <select className="timer-duration" aria-label="Timer duration" value={timerDuration} disabled={isGuest || timerRunning} title={isGuest ? 'Only the owner can control the timer' : undefined} onChange={(event) => changeTimerDuration(Number(event.target.value))}>{TIMER_PRESETS.map((duration) => <option value={duration} key={duration}>{duration} min</option>)}</select>
-            {timerSeconds < timerDuration * 60 && isHost && <button className="timer-reset" title="Reset timer" onClick={resetTimer}><Icon name="refresh" size={14} /></button>}
-          </div>
-          <div className="toolbar-right">
-            <span className="note-total"><strong>{board.notes.length}</strong> thoughts</span>
-            <span className="toolbar-separator" />
-            <button className="toolbar-button" onClick={() => window.print()}><Icon name="download" size={16} /> Export</button>
-            {board.columns.length < 5 && isHost && <button className="toolbar-button add-column" onClick={addColumn}><Icon name="plus" size={15} /> Add column</button>}
-            <button className="toolbar-button connect-tool" onClick={setConnectionOpen}><Icon name="users" size={16} />{peerState === 'connected' ? 'Connection' : 'Invite team'}</button>
-          </div>
-        </section>
-
-        <section className={`columns ${board.columns.length > 3 ? 'many-columns' : ''}`} aria-label="Retrospective board">
-          {board.columns.map((column) => {
-            const notes = board.notes.filter((note) => note.columnId === column.id)
-            return <section className={`column column-${column.color}`} key={column.id}>
-              <div className="column-header"><span className="column-marker" /><h2>{column.title}</h2><span className="column-count">{notes.length}</span><button className="column-add" onClick={() => { setNoteColumn(column.id); setModal('note') }} title={`Add to ${column.title}`} disabled={board.locked}><Icon name="plus" size={17} /></button></div>
-              <div className="note-list">
-                {notes.map((note) => <article className="note-card" key={note.id}>
-                  <p className={masked ? 'note-text masked' : 'note-text'}>{note.text}</p>
-                  <div className="note-footer"><span className="note-author"><span className={`author-avatar ${note.anonymous ? 'anonymous-avatar' : ''}`}>{note.anonymous ? '•' : note.author.slice(0, 1).toUpperCase()}</span>{note.author}</span><div className="note-actions"><div className="note-reactions" aria-label="Emoji reactions">
-                    {NOTE_REACTIONS.map((emoji) => {
-                      const actors = note.reactions[emoji] ?? []
-                      const active = actors.includes(reactionActorId)
-                      return <button
-                        className={`reaction-button ${active ? 'active' : ''}`}
-                        key={emoji}
-                        onClick={() => toggleReaction(note.id, emoji)}
-                        disabled={board.locked}
-                        aria-label={`${emoji} reaction, ${actors.length}; ${active ? 'remove your reaction' : 'add your reaction'}`}
-                        aria-pressed={active}
-                        title={`${active ? 'Remove' : 'Add'} ${emoji} reaction`}
-                      >{emoji}{actors.length > 0 && <span>{actors.length}</span>}</button>
-                    })}
-                  </div>{(isHost || (!note.anonymous && note.author === (participantName.trim() || 'You'))) && <button className="note-delete" onClick={() => deleteNote(note.id)} disabled={board.locked} aria-label="Delete thought"><Icon name="trash" size={14} /></button>}</div></div>
-                </article>)}
+          {/* Main Setup Card */}
+          <div className="w-full max-w-[540px] rounded-3xl bg-surface-container-lowest border border-outline-variant/40 shadow-2xl p-6 sm:p-10 relative z-10">
+            {/* Visual Header / Illustration */}
+            <div className="flex flex-col items-center text-center mb-8">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 text-primary font-label-md text-label-md font-bold tracking-wider uppercase mb-3">
+                <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
+                <span>A fresh start for your team</span>
               </div>
-              {!board.locked && <button className="add-card" onClick={() => { setNoteColumn(column.id); setModal('note') }}><Icon name="plus" size={15} /> Add a thought</button>}
+              <h1 className="font-headline-lg text-2xl sm:text-3xl text-on-surface font-extrabold tracking-tight mb-2">
+                Make space to <span className="text-primary">look back together.</span>
+              </h1>
+              <p className="font-body-md text-body-md text-on-surface-variant max-w-md">
+                Create a retrospective board. Invite your team with a direct link, then share thoughts and celebrate wins peer-to-peer.
+              </p>
+            </div>
+
+            {/* Setup Form */}
+            <form onSubmit={(e) => void createBoard(e)} className="flex flex-col gap-5">
+              <div>
+                <label className="block font-label-md text-label-md font-semibold text-on-surface mb-1.5" htmlFor="setup-board-name">
+                  Give your retro a name
+                </label>
+                <input
+                  id="setup-board-name"
+                  type="text"
+                  className="w-full px-4 py-3 rounded-2xl bg-surface-container-low border border-outline-variant/60 focus:border-primary focus:ring-2 focus:ring-primary/20 text-on-surface font-body-md text-body-md outline-none transition-all"
+                  value={newBoardTitle}
+                  onChange={(e) => setNewBoardTitle(e.target.value)}
+                  placeholder="e.g. Sprint Retrospective"
+                  maxLength={60}
+                  required
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block font-label-md text-label-md font-semibold text-on-surface mb-1.5" htmlFor="setup-owner-name">
+                  Your name
+                </label>
+                <input
+                  id="setup-owner-name"
+                  type="text"
+                  className="w-full px-4 py-3 rounded-2xl bg-surface-container-low border border-outline-variant/60 focus:border-primary focus:ring-2 focus:ring-primary/20 text-on-surface font-body-md text-body-md outline-none transition-all"
+                  value={participantName}
+                  onChange={(e) => setParticipantName(e.target.value)}
+                  placeholder="How should your team identify you? (e.g. Alex)"
+                  maxLength={32}
+                  required
+                />
+              </div>
+
+              {/* Columns Setup */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-label-md text-label-md font-semibold text-on-surface">Columns</span>
+                  <span className="font-label-sm text-label-sm text-outline">{newBoardColumns.length} of 5</span>
+                </div>
+                <div className="flex flex-col gap-2.5">
+                  {newBoardColumns.map((colTitle, index) => {
+                    const colorClass = ['bg-emerald-400', 'bg-amber-400', 'bg-purple-400', 'bg-blue-400', 'bg-yellow-400'][index % 5]
+                    return (
+                      <div key={index} className="flex items-center gap-2">
+                        <span className={`w-3 h-3 rounded-full shrink-0 ${colorClass}`} />
+                        <input
+                          type="text"
+                          className="flex-1 px-3.5 py-2 rounded-xl bg-surface-container-low border border-outline-variant/50 focus:border-primary focus:ring-1 focus:ring-primary/20 text-on-surface font-body-sm text-body-sm outline-none transition-all"
+                          value={colTitle}
+                          onChange={(e) => updateNewBoardColumn(index, e.target.value)}
+                          placeholder={`Column ${index + 1}`}
+                          maxLength={28}
+                          required
+                        />
+                        <button
+                          type="button"
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-outline hover:text-error hover:bg-error-container/20 disabled:opacity-30 disabled:hover:text-outline disabled:hover:bg-transparent transition-colors"
+                          onClick={() => removeNewBoardColumn(index)}
+                          disabled={newBoardColumns.length <= 2}
+                          title="Remove column"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">delete</span>
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+                {newBoardColumns.length < 5 && (
+                  <button
+                    type="button"
+                    onClick={addNewBoardColumn}
+                    className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">add</span>
+                    <span>Add a column</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Buttons */}
+              <div className="pt-2 flex flex-col gap-2.5">
+                <button
+                  type="submit"
+                  disabled={!newBoardTitle.trim() || !participantName.trim() || newBoardColumns.some((c) => !c.trim())}
+                  className="w-full py-3.5 rounded-2xl bg-primary text-on-primary font-headline-sm text-headline-sm font-bold shadow-lg shadow-primary/25 hover:shadow-xl hover:opacity-95 active:scale-[0.99] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-[20px]">rocket_launch</span>
+                  <span>Create my board</span>
+                </button>
+              </div>
+
+              {/* Privacy Footnote */}
+              <div className="pt-2 border-t border-outline-variant/30 flex items-center justify-center gap-1.5 text-outline text-[12px]">
+                <span className="material-symbols-outlined text-[14px]">lock</span>
+                <span>No accounts needed. Board syncs peer-to-peer via WebRTC.</span>
+              </div>
+            </form>
+          </div>
+        </main>
+      ) : (
+        <>
+          {/* HEADER BAR */}
+          <header className="fixed top-0 left-0 right-0 z-50 bg-surface/90 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)]">
+            <div className="h-16 px-margin flex items-center justify-between gap-gutter max-w-[1920px] mx-auto w-full">
+              {/* Left: Logo & Breadcrumbs */}
+              <div className="flex items-center gap-space-md shrink-0">
+                <div className="flex items-center cursor-pointer" onClick={() => setModal('settings')}>
+                  <img alt="Together Retro Logo" className="h-9 sm:h-10 w-auto object-contain" src={togetherLogo} />
+                </div>
+                <div className="h-5 w-px bg-outline-variant/60"></div>
+                <div className="flex items-center gap-space-xs text-on-surface">
+                  <span className="font-headline-md text-headline-md text-on-surface font-semibold truncate max-w-[180px] lg:max-w-none">{board.title}</span>
+                </div>
+              </div>
+
+              {/* Center: Retro Timer Widget */}
+              <div className="hidden md:flex items-center justify-center">
+                <div
+                  className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-2xl bg-gradient-to-r from-surface-container-lowest via-surface-container-low to-surface-container-lowest border-2 border-secondary/40 shadow-md shadow-secondary/10 hover:shadow-lg hover:border-secondary transition-all relative group"
+                  id="retro-timer-widget"
+                >
+                  <div className="flex items-center gap-2.5 pr-2.5 border-r border-outline-variant/40">
+                    <div className="relative flex items-center justify-center w-8 h-8 rounded-full bg-secondary-fixed/40 text-secondary shrink-0 shadow-inner">
+                      <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 36 36">
+                        <circle className="text-secondary-fixed/40" cx="18" cy="18" fill="none" r="15" stroke="currentColor" strokeWidth="3" />
+                        <circle
+                          className="text-secondary transition-all drop-shadow-[0_0_4px_rgba(0,108,73,0.5)]"
+                          cx="18"
+                          cy="18"
+                          fill="none"
+                          r="15"
+                          stroke="currentColor"
+                          strokeDasharray="94.2"
+                          strokeDashoffset={strokeDashoffset}
+                          strokeLinecap="round"
+                          strokeWidth="3"
+                        />
+                      </svg>
+                      <span className="relative flex h-2 w-2">
+                        {timerRunning && (
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary opacity-75" />
+                        )}
+                        <span className={`relative inline-flex rounded-full h-2 w-2 ${timerRunning ? 'bg-secondary' : 'bg-outline'}`} />
+                      </span>
+                    </div>
+                    <div className="flex flex-col text-left">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-timer-display text-[18px] font-bold text-on-surface tracking-tight font-mono" id="timer-display-digits">
+                          {displayTime}
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-label-sm text-[10px] font-bold tracking-wider shadow-sm uppercase ${
+                            timerSeconds === 0 ? 'bg-error text-on-error' : 'bg-secondary text-on-secondary'
+                          }`}
+                        >
+                          <span className="material-symbols-outlined text-[11px]">{timerSeconds === 0 ? 'alarm' : 'bolt'}</span>
+                          {timerSeconds === 0 ? 'TIME UP' : 'BRAINSTORM'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <div className="w-16 h-1.5 rounded-full bg-surface-container-high overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-secondary-fixed via-secondary to-secondary-fixed-dim transition-all duration-300"
+                            style={{ width: `${progressPercent}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-on-surface-variant leading-none font-label-sm font-semibold">
+                          {timeLeftLabel}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      className="w-7 h-7 rounded-lg bg-secondary text-on-secondary hover:opacity-90 flex items-center justify-center shadow-sm hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                      id="timer-play-btn"
+                      onClick={toggleTimer}
+                      title={timerRunning ? 'Pause Timer' : 'Resume / Start Timer'}
+                      type="button"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">{timerRunning ? 'pause' : 'play_arrow'}</span>
+                    </button>
+                    <button
+                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer"
+                      onClick={() => addTimerMinutes(1)}
+                      title="Add 1 minute"
+                      type="button"
+                    >
+                      +1m
+                    </button>
+                    <button
+                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer"
+                      onClick={() => addTimerMinutes(3)}
+                      title="Add 3 minutes"
+                      type="button"
+                    >
+                      +3m
+                    </button>
+                    <button
+                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer"
+                      onClick={() => addTimerMinutes(5)}
+                      title="Add 5 minutes"
+                      type="button"
+                    >
+                      +5m
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right: Actions */}
+              <div className="flex items-center gap-space-md shrink-0">
+                {/* New Board button (for Host) */}
+                {isHost && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewBoardTitle('')
+                      setNewBoardColumns(DEFAULT_COLUMN_TITLES)
+                      setModal('new-board')
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high border border-outline-variant/40 text-on-surface font-label-md text-label-md transition-all shadow-sm cursor-pointer"
+                    title="Start a new retrospective board"
+                  >
+                    <span className="material-symbols-outlined text-[18px] text-primary">add_circle</span>
+                    <span className="hidden sm:inline">New board</span>
+                  </button>
+                )}
+
+                {/* Invite P2P button */}
+                <button
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-primary text-on-primary hover:opacity-95 font-label-md text-label-md transition-all shadow-sm cursor-pointer group"
+                  title="Invite collaborators via Direct Peer-to-Peer link"
+                  type="button"
+                  onClick={() => void copyInviteDirect()}
+                >
+                  <span className="material-symbols-outlined text-[18px]">link</span>
+                  <span>Invite P2P</span>
+                  <span className="px-1.5 py-0.2 rounded bg-white/20 text-on-primary font-label-sm text-[10px] font-bold uppercase tracking-wider">P2P</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+      {/* ======================================================== */}
+      {/* MAIN RETRO BOARD */}
+      {/* ======================================================== */}
+      <main className="w-full bg-background flex-1 pt-20">
+        {waitingForSharedBoard && (
+          <div className="w-full bg-primary/10 border-b border-primary/20 px-margin py-2 text-center text-xs font-semibold text-primary flex items-center justify-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-primary animate-ping" />
+            <span>Connecting to host board over P2P mesh… Please wait while snapshot arrives.</span>
+            {peerState === 'failed' && (
+              <button
+                type="button"
+                className="ml-2 underline font-bold cursor-pointer"
+                onClick={() => void connectAsGuest(joinPeerId, participantName)}
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        )}
+        <div className="flex flex-col w-full">
+          <div className="w-full px-margin pt-4 flex flex-col gap-space-lg max-w-[1920px] mx-auto pb-6">
+            {/* TOP FACILITATION / PROMPT BANNER */}
+            <section className="w-full rounded-2xl bg-surface-container-lowest border border-outline-variant/30 shadow-sm p-4 lg:p-5 flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-4 relative overflow-hidden">
+              {/* Ambient decorative gradient pulse */}
+              <div className="absolute -right-20 -top-20 w-72 h-72 bg-gradient-to-br from-primary/10 via-secondary/5 to-transparent rounded-full blur-3xl pointer-events-none"></div>
+
+              {/* Left: Retrospective focus & owner status */}
+              <div className="flex items-start sm:items-center gap-3.5 z-10 flex-1 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-primary-fixed flex items-center justify-center text-primary shrink-0 shadow-sm">
+                  <span className="material-symbols-outlined text-[22px]">lightbulb</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-headline-sm text-headline-sm text-on-surface font-semibold">{board.title} Focus</span>
+                    {isHost ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 font-label-sm text-label-sm font-semibold">
+                        <span className="material-symbols-outlined text-[14px]">shield_person</span>
+                        <span>Board Owner</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant border border-outline-variant/40 font-label-sm text-label-sm font-medium">
+                        <span className="material-symbols-outlined text-[14px]">person</span>
+                        <span>Participant</span>
+                      </span>
+                    )}
+                  </div>
+                  <p className="font-body-md text-body-md text-on-surface-variant truncate lg:whitespace-normal">
+                    Reflecting on {board.title} — What accelerated us? What slowed us down? Let's stay constructive, curious, and candid.
+                  </p>
+                </div>
+              </div>
+
+              {/* Right: Facilitation Controls */}
+              <div className="flex flex-wrap items-center gap-3 z-10 shrink-0">
+                {/* Team Presence Avatars & Connected counter */}
+                <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-2xl bg-surface-container border border-outline-variant/40 shadow-sm">
+                  <div className="flex items-center -space-x-2">
+                    {/* User avatar */}
+                    <div
+                      className="relative group cursor-pointer"
+                      title={`${participantName || 'You'} (${isHost ? 'Board Owner' : 'Participant'})`}
+                      onClick={openSettings}
+                    >
+                      <div className="w-8 h-8 rounded-full bg-primary-fixed text-on-primary-fixed ring-2 ring-surface flex items-center justify-center font-label-sm text-label-sm font-bold shadow-sm transition-transform hover:scale-105 z-10">
+                        {initials(participantName || 'You')}
+                      </div>
+                      <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-secondary ring-1 ring-surface"></span>
+                    </div>
+
+                    {/* Connected peers */}
+                    {Object.entries(participants).slice(0, 5).map(([pId, pName]) => (
+                      <div key={pId} className="relative group cursor-pointer" title={pName}>
+                        <div className={`w-8 h-8 rounded-full ${getAuthorAvatarClass(pName)} ring-2 ring-surface flex items-center justify-center font-label-sm text-label-sm font-bold shadow-sm transition-transform hover:scale-105 z-10`}>
+                          {initials(pName)}
+                        </div>
+                        <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-secondary ring-1 ring-surface"></span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Connected counter badge */}
+                  <button
+                    type="button"
+                    onClick={setConnectionOpen}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-container-highest/60 hover:bg-surface-container-high border border-outline-variant/40 text-on-surface font-label-sm text-label-sm font-semibold transition-colors shadow-sm cursor-pointer"
+                    title={peerState === 'connected' ? `${peerCount + 1} team members connected via P2P mesh` : 'Connection details'}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${peerState === 'connected' ? 'bg-secondary animate-pulse' : peerState === 'ready' ? 'bg-primary' : 'bg-outline'}`}></span>
+                    <span>{peerCount > 0 ? `+${peerCount} joined` : isHost ? 'Invite ready' : 'Solo'}</span>
+                    <span className="text-outline font-normal text-[11px]">({peerCount + 1} live)</span>
+                  </button>
+                </div>
+
+                {/* Incognito toggle badge */}
+                <button
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface-container-low hover:bg-surface-container text-on-surface-variant transition-colors group cursor-pointer text-left"
+                  type="button"
+                  onClick={() => setAnonymous(!anonymous)}
+                  title={anonymous ? 'Click to show name on notes' : 'Click to post anonymously'}
+                >
+                  <div className="w-6 h-6 rounded-full bg-surface-container-high flex items-center justify-center text-outline group-hover:text-primary transition-colors">
+                    <span className="material-symbols-outlined text-[16px]">{anonymous ? 'visibility_off' : 'visibility'}</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="font-label-sm text-label-sm text-outline">Posting identity</span>
+                    <span className="font-label-md text-label-md text-on-surface font-medium">
+                      {anonymous ? (
+                        <>Anonymous <span className="text-secondary font-medium">(Ghost Mode)</span></>
+                      ) : (
+                        <>{participantName || 'Anonymous'} <span className="text-outline font-normal">({isHost ? 'Owner' : 'Participant'})</span></>
+                      )}
+                    </span>
+                  </div>
+                </button>
+              </div>
             </section>
-          })}
-        </section>
 
-        <footer className="board-footer"><span><Icon name="lock" size={14} /> Your board is saved on this device</span><button onClick={setConnectionOpen}><Icon name="link" size={14} /> Share a direct invite</button><span className="footer-separator">·</span><span>Peer-to-peer board data</span></footer>
+            {/* RETRO BOARD 4-COLUMN HORIZONTAL CANVAS */}
+            <div className="w-full overflow-x-auto pb-4 pt-1 snap-x no-scrollbar">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-gutter min-w-[320px] xl:min-w-[1380px]">
+                {ensureActionItemsAtLast(board.columns).map((column, colIndex) => {
+                  const meta = getColumnMeta(column.title, colIndex)
+                  const columnNotes = board.notes
+                    .filter((n) => n.columnId === column.id)
+                    .sort((a, b) => (sortByVotes[column.id] ? b.votes - a.votes : a.createdAt - b.createdAt))
+
+                  return (
+                    <div
+                      key={column.id}
+                      className="flex flex-col rounded-2xl bg-surface-container-low/70 p-3.5 gap-3.5 relative transition-all group"
+                      id={column.id}
+                    >
+                      {/* Accent strip */}
+                      <div className={`h-1.5 w-full rounded-full bg-gradient-to-r ${meta.gradient}`} />
+
+                      {/* Column Header */}
+                      <div className="flex items-center justify-between px-1.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="text-xl shrink-0">{meta.emoji}</span>
+                          <div className="flex flex-col min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h2 className="font-headline-md text-headline-md text-on-surface tracking-tight truncate">
+                                {column.title}
+                              </h2>
+                              <span className={`px-2 py-0.5 rounded-full ${meta.countBadge} font-label-sm text-label-sm font-bold shrink-0`}>
+                                {columnNotes.length}
+                              </span>
+                            </div>
+                            <span className="font-label-sm text-label-sm text-outline truncate">{meta.subtitle}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {meta.emoji === '✨' && (
+                            <button
+                              className="w-8 h-8 rounded-lg bg-surface-container hover:bg-surface-container-high text-primary flex items-center justify-center transition-transform active:scale-90 cursor-pointer"
+                              onClick={triggerConfetti}
+                              title="Trigger Team Confetti!"
+                              type="button"
+                            >
+                              <span className="material-symbols-outlined text-[18px]">celebration</span>
+                            </button>
+                          )}
+                          <button
+                            className={`w-8 h-8 rounded-lg flex items-center justify-center text-outline hover:text-on-surface hover:bg-surface-container transition-colors cursor-pointer ${
+                              sortByVotes[column.id] ? 'text-primary bg-surface-container' : ''
+                            }`}
+                            title={sortByVotes[column.id] ? 'Sorted by votes' : 'Sort by votes'}
+                            type="button"
+                            onClick={() => setSortByVotes((prev) => ({ ...prev, [column.id]: !prev[column.id] }))}
+                          >
+                            <span className="material-symbols-outlined text-[18px]">swap_vert</span>
+                          </button>
+                          <button
+                            className="w-8 h-8 rounded-lg bg-surface-container-high/80 hover:bg-surface-container-highest text-on-surface flex items-center justify-center transition-colors cursor-pointer"
+                            onClick={() => focusComposer(column.id)}
+                            title="Add note"
+                            type="button"
+                          >
+                            <span className="material-symbols-outlined text-[20px]">add</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Fast Inline Composer */}
+                      <form
+                        onSubmit={(e) => addInlineNote(e, column.id)}
+                        className="rounded-xl bg-surface-container-lowest p-3 shadow-sm hover:shadow-md transition-shadow"
+                      >
+                        <textarea
+                          className="w-full bg-transparent resize-none border-none focus:outline-none font-body-md text-body-md text-on-surface placeholder:text-outline"
+                          value={inlineDrafts[column.id] ?? ''}
+                          onChange={(e) => setInlineDrafts((prev) => ({ ...prev, [column.id]: e.target.value }))}
+                          placeholder={meta.placeholder}
+                          rows={2}
+                        />
+                        <div className="flex items-center justify-between pt-2 mt-1">
+                          <span className="text-[11px] text-outline font-normal flex items-center gap-1 select-none" title="Markdown supported: **bold**, *italic*, `code`, - list, > quote, [link](url)">
+                            <span className="material-symbols-outlined text-[14px]">format_underlined</span>
+                            <span>Markdown supported</span>
+                          </span>
+                          <button
+                            className={`inline-flex items-center gap-1 px-3 py-1 rounded-lg ${meta.buttonBg} hover:opacity-90 font-label-md text-label-md shadow-sm transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`}
+                            type="submit"
+                            disabled={!inlineDrafts[column.id]?.trim()}
+                          >
+                            <span>Post</span>
+                            <span className="material-symbols-outlined text-[16px]">arrow_upward</span>
+                          </button>
+                        </div>
+                      </form>
+
+                      {/* Cards Container */}
+                      <div className="flex flex-col gap-3">
+                        {columnNotes.map((note) => {
+                          const hasVoted = note.voteIds.includes(reactionActorId)
+                          return (
+                            <div
+                              key={note.id}
+                              className="group/card rounded-xl bg-surface-container-lowest p-4 shadow-sm hover:shadow-md transition-all relative flex flex-col gap-3"
+                            >
+                              {/* Author Meta Row */}
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className={`w-6 h-6 rounded-full ${getAuthorAvatarClass(note.author)} flex items-center justify-center font-label-sm text-label-sm font-bold shrink-0`}>
+                                    {initials(note.author)}
+                                  </div>
+                                  <span className="font-label-md text-label-md text-on-surface font-medium truncate">{note.author}</span>
+                                  <span className="text-outline text-[12px] shrink-0">• {relativeTime(note.createdAt, timerNow)}</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteNote(note.id)}
+                                  className="text-outline hover:text-error opacity-0 group-hover/card:opacity-100 transition-opacity p-1 rounded hover:bg-error-container/20 cursor-pointer"
+                                  title="Delete note"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">delete</span>
+                                </button>
+                              </div>
+
+                              {/* Body with Markdown rendering */}
+                              <div className="font-body-md text-body-md text-on-surface leading-relaxed break-words">
+                                <MarkdownView content={note.text} />
+                              </div>
+
+                              {/* Footer / Reactions & Comments */}
+                              <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {/* Upvote button */}
+                                  <button
+                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-label-md text-label-md hover:scale-105 active:scale-95 transition-transform cursor-pointer ${
+                                      hasVoted
+                                        ? 'bg-primary text-on-primary'
+                                        : note.votes >= 10
+                                        ? 'bg-secondary-fixed/40 text-on-secondary-fixed'
+                                        : 'bg-surface-container hover:bg-secondary-fixed/40 text-on-surface-variant hover:text-on-secondary-fixed'
+                                    }`}
+                                    onClick={() => toggleVote(note.id)}
+                                    type="button"
+                                    title={hasVoted ? 'Remove upvote' : 'Upvote'}
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">thumb_up</span>
+                                    <span className="vote-count font-bold">{note.votes}</span>
+                                  </button>
+
+                                  {/* Add reaction trigger - always beside the upvote button */}
+                                  <div className="relative reaction-picker-container">
+                                    <button
+                                      type="button"
+                                      className={`p-1 rounded-full hover:bg-surface-container transition-colors cursor-pointer flex items-center justify-center ${
+                                        reactionPickerNoteId === note.id ? 'text-primary bg-surface-container' : 'text-outline hover:text-on-surface'
+                                      }`}
+                                      title="Add reaction"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setReactionPickerNoteId((prev) => (prev === note.id ? '' : note.id))
+                                      }}
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">add_reaction</span>
+                                    </button>
+
+                                    {reactionPickerNoteId === note.id && (
+                                      <ReactionPickerPopover
+                                        noteId={note.id}
+                                        reactions={note.reactions}
+                                        currentActorId={reactionActorId}
+                                        onToggleReaction={toggleReaction}
+                                        onClose={() => setReactionPickerNoteId('')}
+                                        align="left"
+                                      />
+                                    )}
+                                  </div>
+
+                                  {/* Reaction badges displayed after the emoji button */}
+                                  {Object.entries(note.reactions).map(([emoji, actors]) => {
+                                    if (actors.length === 0) return null
+                                    const active = actors.includes(reactionActorId)
+                                    return (
+                                      <button
+                                        key={emoji}
+                                        type="button"
+                                        onClick={() => toggleReaction(note.id, emoji)}
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-label-sm text-label-sm cursor-pointer transition-colors ${
+                                          active
+                                            ? 'bg-secondary-fixed text-on-secondary-fixed font-bold'
+                                            : 'bg-surface-container hover:bg-surface-container-high text-on-surface-variant'
+                                        }`}
+                                        title={`${emoji} reaction (${actors.length})`}
+                                      >
+                                        <span>{emoji}</span>
+                                        <span>{actors.length}</span>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+
+                                {/* Comments trigger */}
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-1 text-outline hover:text-primary font-label-sm text-label-sm transition-colors cursor-pointer ml-auto"
+                                  onClick={() => setExpandedComments((prev) => ({ ...prev, [note.id]: !prev[note.id] }))}
+                                  title={note.comments.length > 0 ? `${note.comments.length} comments` : 'Add comment'}
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">mode_comment</span>
+                                  <span>{note.comments.length > 0 ? note.comments.length : 'Reply'}</span>
+                                </button>
+                              </div>
+
+                              {/* Expandable comments thread */}
+                              {expandedComments[note.id] && (
+                                <div className="flex flex-col gap-2 pt-2 border-t border-outline-variant/30">
+                                  {note.comments.map((comment) => (
+                                    <div key={comment.id} className="flex flex-col gap-1 rounded-lg bg-surface-container-low p-2.5 text-body-sm font-body-sm group/comment">
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-1.5">
+                                          <div className={`w-5 h-5 rounded-full ${getAuthorAvatarClass(comment.author)} flex items-center justify-center text-[10px] font-bold`}>
+                                            {initials(comment.author)}
+                                          </div>
+                                          <span className="font-label-sm text-label-sm text-on-surface font-semibold">{comment.author}</span>
+                                          <span className="text-[11px] text-outline">• {relativeTime(comment.createdAt, timerNow)}</span>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => deleteComment(note.id, comment.id)}
+                                          className="text-outline hover:text-error opacity-0 group-hover/comment:opacity-100 transition-opacity p-0.5 rounded cursor-pointer"
+                                          title="Delete comment"
+                                        >
+                                          <span className="material-symbols-outlined text-[14px]">delete</span>
+                                        </button>
+                                      </div>
+                                      <div className="text-on-surface pl-6 leading-relaxed break-words text-body-sm">
+                                        <MarkdownView content={comment.text} />
+                                      </div>
+                                    </div>
+                                  ))}
+
+                                  {/* Comment Composer */}
+                                  <form className="flex items-center gap-2 pt-1" onSubmit={(e) => addComment(e, note.id)}>
+                                    <div className={`w-6 h-6 rounded-full ${getAuthorAvatarClass(participantName || 'You')} flex items-center justify-center font-label-sm text-label-sm font-bold shrink-0`}>
+                                      {initials(participantName || 'You')}
+                                    </div>
+                                    <div className="flex-1 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container border border-outline-variant/40 focus-within:ring-2 focus-within:ring-primary">
+                                      <input
+                                        type="text"
+                                        placeholder="Reply or add a suggestion..."
+                                        value={commentDrafts[note.id] ?? ''}
+                                        onChange={(e) => setCommentDrafts((prev) => ({ ...prev, [note.id]: e.target.value }))}
+                                        className="w-full bg-transparent border-none focus:outline-none text-body-sm font-body-sm text-on-surface placeholder:text-outline"
+                                      />
+                                      <button
+                                        type="submit"
+                                        disabled={!commentDrafts[note.id]?.trim()}
+                                        className="px-2 py-0.5 rounded bg-primary text-on-primary font-label-sm text-label-sm font-medium hover:opacity-90 transition-opacity shrink-0 disabled:opacity-50 cursor-pointer"
+                                      >
+                                        Reply
+                                      </button>
+                                    </div>
+                                  </form>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+
+                        {/* Empty column placeholder */}
+                        {columnNotes.length === 0 && (
+                          <div className="rounded-xl border border-dashed border-outline-variant/50 p-6 flex flex-col items-center justify-center text-center text-outline">
+                            <span className="text-2xl mb-1.5 opacity-60">{meta.emoji}</span>
+                            <p className="font-body-sm text-body-sm font-medium">No notes yet</p>
+                            <p className="text-[12px] text-outline/80 mt-0.5">Be the first to share a thought!</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
+      </>
+      )}
 
-      {notice && <div className="toast" role="status"><span className="toast-check"><Icon name="check" size={15} /></span>{notice}</div>}
+      {/* ======================================================== */}
+      {/* FLOATING TOAST NOTIFICATION */}
+      {/* ======================================================== */}
+      {notice && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-secondary text-on-secondary font-headline-sm text-headline-sm shadow-xl flex items-center gap-2 animate-bounce">
+          <span className="material-symbols-outlined text-[18px]">celebration</span>
+          <span>{notice}</span>
+        </div>
+      )}
 
-      {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null) }}>
-        {modal === 'guest-name' && <section className="modal note-modal" role="dialog" aria-modal="true" aria-labelledby="guest-name-title">
-          <div className="modal-topline"><span className="modal-icon"><Icon name="users" /></span><button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><Icon name="close" /></button></div>
-          <h2 id="guest-name-title">What should we call you?</h2><p className="modal-description">Your name will appear to the board owner and teammates when you join.</p>
-          <form onSubmit={(event) => void confirmGuestName(event)}>
-            <label className="field-label" htmlFor="guest-display-name">Your name</label>
-            <input id="guest-display-name" className="text-field" value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="e.g. Taylor" maxLength={32} autoFocus required />
-            <div className="modal-actions"><button type="button" className="button button-quiet" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="button button-primary" disabled={!guestName.trim()}><Icon name="arrow" size={16} /> Join board</button></div>
-          </form>
-        </section>}
-        {modal === 'note' && <section className="modal note-modal" role="dialog" aria-modal="true" aria-labelledby="note-title">
-          <div className="modal-topline"><span className="modal-icon"><Icon name="spark" /></span><button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><Icon name="close" /></button></div>
-          <h2 id="note-title">Add a thought</h2><p className="modal-description">What’s on your mind? Good, tricky, or somewhere in between.</p>
-          <form onSubmit={addNote}>
-            <label className="field-label" htmlFor="note-column">Add to</label><select id="note-column" className="text-field" value={noteColumn} onChange={(event) => setNoteColumn(event.target.value)}>{board.columns.map((column) => <option value={column.id} key={column.id}>{column.title}</option>)}</select>
-            <label className="field-label thought-label" htmlFor="note-text">Your thought</label><textarea id="note-text" className="text-field note-input" placeholder="Share a moment, an idea, or something we can make better…" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={500} autoFocus required />
-            <label className="anonymous-toggle"><input type="checkbox" checked={anonymous} onChange={(event) => setAnonymous(event.target.checked)} /><span className="custom-checkbox"><Icon name="check" size={13} /></span><span>Post anonymously</span><span className="anonymous-hint">Your name won’t appear on this thought</span></label>
-            <div className="modal-actions"><button type="button" className="button button-quiet" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="button button-primary" disabled={!draft.trim()}><Icon name="plus" size={16} /> Add thought</button></div>
-          </form>
-        </section>}
+      {/* ======================================================== */}
+      {/* MODALS */}
+      {/* ======================================================== */}
+      {modal && (
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null) }}>
+          {/* Guest Name Modal */}
+          {modal === 'guest-name' && (
+            <section className="modal" role="dialog" aria-modal="true">
+              <div className="modal-topline">
+                <span className="modal-icon"><span className="material-symbols-outlined">person</span></span>
+                <button className="modal-close" onClick={() => setModal(null)}><span className="material-symbols-outlined">close</span></button>
+              </div>
+              <h2>What should we call you?</h2>
+              <p className="modal-description">Enter your name to join the retrospective and collaborate live with your team.</p>
+              <form onSubmit={(e) => void confirmGuestName(e)}>
+                <label className="field-label" htmlFor="guest-display-name">Your name</label>
+                <input
+                  id="guest-display-name"
+                  className="text-field"
+                  value={guestName}
+                  onChange={(e) => setGuestName(e.target.value)}
+                  placeholder="e.g. Alex Rivera"
+                  maxLength={32}
+                  autoFocus
+                  required
+                />
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
+                  <button type="submit" className="btn-primary" disabled={!guestName.trim()}>
+                    <span className="material-symbols-outlined text-[16px]">login</span>
+                    <span>Join retro</span>
+                  </button>
+                </div>
+              </form>
+            </section>
+          )}
 
-        {modal === 'settings' && <section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-          <div className="modal-topline"><span className="modal-icon"><Icon name="settings" /></span><button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><Icon name="close" /></button></div>
-          <h2 id="settings-title">Board settings</h2><p className="modal-description">Make this board feel right for your team.</p>
-          <label className="field-label" htmlFor="board-name">Board name</label><input id="board-name" className="text-field" value={editBoardTitle} disabled={!isHost} onChange={(event) => setEditBoardTitle(event.target.value)} placeholder="Name this retrospective" maxLength={60} />
-          <label className="field-label" htmlFor="profile-name">Your name</label><input id="profile-name" className="text-field" value={editName} onChange={(event) => setEditName(event.target.value)} placeholder="Add your name" maxLength={32} />
-          <label className="field-label" htmlFor="retention-days">Automatically delete inactive board data</label><select id="retention-days" className="text-field" value={board.retentionDays} disabled={isGuest} onChange={(event) => setBoard((current) => ({ ...current, retentionDays: Number(event.target.value) }))}><option value={0}>Never</option><option value={7}>After 7 days</option><option value={30}>After 30 days</option><option value={90}>After 90 days</option></select>
-          <p className="settings-hint">Retention is applied locally on each device, based on the board’s last update.</p>
-          <div className="settings-section-title"><span>Columns</span><span>{board.columns.length} of 5</span></div>
-          {isGuest && <p className="settings-hint">The host manages shared board columns.</p>}
-          <div className="column-editor">{board.columns.map((column, index) => <div className="column-edit-row" key={column.id}><span className={`column-swatch column-${column.color}`} /><input className="text-field" value={column.title} aria-label={`Column ${index + 1} name`} maxLength={28} disabled={isGuest} onChange={(event) => updateColumn(column.id, event.target.value)} /><button className="remove-column" onClick={() => { if (board.columns.length > 1) setBoard((current) => { const fallback = current.columns.find((item) => item.id !== column.id); if (!fallback) return current; return { ...current, columns: current.columns.filter((item) => item.id !== column.id), notes: current.notes.map((note) => note.columnId === column.id ? { ...note, columnId: fallback.id } : note) } }) }} disabled={board.columns.length < 2 || isGuest} title="Remove column"><Icon name="trash" size={15} /></button></div>)}</div>
-          {board.columns.length < 5 && !isGuest && <button className="settings-add-column" onClick={addColumn}><Icon name="plus" size={15} /> Add a column</button>}
-          {isHost && Object.keys(participants).length > 0 && <div className="ownership-transfer">
-            <div className="settings-section-title"><span>Transfer ownership</span></div>
-            <p className="settings-hint">Choose a connected teammate to become the board owner.</p>
-            <select className="text-field" aria-label="New board owner" value={transferTarget} onChange={(event) => setTransferTarget(event.target.value)}>
-              {Object.entries(participants).map(([peerId, name]) => <option value={peerId} key={peerId}>{name}</option>)}
-            </select>
-            <button className="button button-soft" disabled={!transferTarget} onClick={() => {
-              const room = roomRef.current
-              const name = participants[transferTarget]
-              if (!room || !name) return
-              try {
-                room.transferOwnership(transferTarget, name)
-                setModal(null)
-              } catch (error) {
-                toast(error instanceof Error ? error.message : 'Could not transfer board ownership.')
-              }
-            }}>Transfer ownership</button>
-          </div>}
-          <div className="modal-actions"><button className="button button-quiet" onClick={() => setModal(null)}>Done</button><button className="button button-primary" onClick={() => { setParticipantName(editName.trim()); if (isHost) setBoard((current) => ({ ...current, title: editBoardTitle.trim() || current.title })); setModal(null); toast('Your preferences are saved.') }}><Icon name="check" size={16} /> Save changes</button></div>
-        </section>}
+          {/* Start New Board Modal */}
+          {modal === 'new-board' && (
+            <section className="modal" role="dialog" aria-modal="true">
+              <div className="modal-topline">
+                <span className="modal-icon"><span className="material-symbols-outlined">auto_awesome</span></span>
+                <button className="modal-close" onClick={() => setModal(null)}><span className="material-symbols-outlined">close</span></button>
+              </div>
+              <h2>Start a new retro</h2>
+              <p className="modal-description">Set up your board and invite the team with a direct P2P link.</p>
+              <form onSubmit={(e) => void createBoard(e)}>
+                <label className="field-label" htmlFor="new-modal-board-name">Board name</label>
+                <input
+                  id="new-modal-board-name"
+                  className="text-field"
+                  value={newBoardTitle}
+                  onChange={(e) => setNewBoardTitle(e.target.value)}
+                  placeholder="e.g. Sprint 43 Retrospective"
+                  maxLength={60}
+                  required
+                  autoFocus
+                />
+                <label className="field-label" htmlFor="new-modal-owner-name">Your name</label>
+                <input
+                  id="new-modal-owner-name"
+                  className="text-field"
+                  value={participantName}
+                  onChange={(e) => setParticipantName(e.target.value)}
+                  placeholder="How should your team identify you?"
+                  maxLength={32}
+                  required
+                />
+                <div className="flex items-center justify-between mt-3 mb-1.5">
+                  <span className="field-label !m-0">Columns</span>
+                  <span className="text-xs text-outline">{newBoardColumns.length} of 5</span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {newBoardColumns.map((col, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className={`w-3 h-3 rounded-full shrink-0 ${['bg-emerald-400', 'bg-amber-400', 'bg-purple-400', 'bg-blue-400', 'bg-yellow-400'][idx % 5]}`} />
+                      <input
+                        className="text-field !py-1.5 text-xs"
+                        value={col}
+                        onChange={(e) => updateNewBoardColumn(idx, e.target.value)}
+                        placeholder={`Column ${idx + 1}`}
+                        maxLength={28}
+                        required
+                      />
+                      <button
+                        type="button"
+                        className="w-7 h-7 flex items-center justify-center text-outline hover:text-error disabled:opacity-30"
+                        onClick={() => removeNewBoardColumn(idx)}
+                        disabled={newBoardColumns.length <= 2}
+                      >
+                        <span className="material-symbols-outlined text-[16px]">delete</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {newBoardColumns.length < 5 && (
+                  <button type="button" onClick={addNewBoardColumn} className="mt-2 text-xs font-semibold text-primary inline-flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">add</span> Add column
+                  </button>
+                )}
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
+                  <button type="submit" className="btn-primary" disabled={!newBoardTitle.trim() || !participantName.trim() || newBoardColumns.some((c) => !c.trim())}>
+                    <span className="material-symbols-outlined text-[16px]">add_circle</span>
+                    <span>Create board</span>
+                  </button>
+                </div>
+              </form>
+            </section>
+          )}
 
-        {modal === 'new-board' && <section className="modal note-modal" role="dialog" aria-modal="true" aria-labelledby="new-board-title">
-          <div className="modal-topline"><span className="modal-icon"><Icon name="spark" /></span><button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><Icon name="close" /></button></div>
-          <h2 id="new-board-title">Start a new retro</h2><p className="modal-description">Set up your board and invite the team with a direct room link.</p>
-          <form onSubmit={(event) => void createBoard(event)}><label className="field-label" htmlFor="new-board-name">Board name</label><input id="new-board-name" className="text-field" value={newBoardTitle} onChange={(event) => setNewBoardTitle(event.target.value)} placeholder="e.g. Sprint 25 retrospective" maxLength={60} required autoFocus /><label className="field-label" htmlFor="new-board-owner-name">Your name</label><input id="new-board-owner-name" className="text-field" value={participantName} onChange={(event) => setParticipantName(event.target.value)} placeholder="How should your team identify you?" maxLength={32} required /><div className="settings-section-title"><span>Columns</span><span>{newBoardColumns.length} of 5</span></div><div className="column-editor">{newBoardColumns.map((column, index) => <div className="column-edit-row" key={index}><span className={`column-swatch column-${['mint', 'peach', 'lavender', 'blue', 'yellow'][index]}`} /><input className="text-field" value={column} onChange={(event) => updateNewBoardColumn(index, event.target.value)} placeholder={`Column ${index + 1}`} aria-label={`Column ${index + 1}`} maxLength={28} required /><button type="button" className="remove-column" onClick={() => removeNewBoardColumn(index)} disabled={newBoardColumns.length <= 2} title="Remove column"><Icon name="trash" size={15} /></button></div>)}</div>{newBoardColumns.length < 5 && <button type="button" className="settings-add-column" onClick={addNewBoardColumn}><Icon name="plus" size={15} /> Add a column</button>}<div className="modal-actions"><button type="button" className="button button-quiet" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="button button-primary" disabled={!participantName.trim() || newBoardColumns.some((column) => !column.trim())}><Icon name="plus" size={16} /> Create board</button></div></form>
-        </section>}
+          {/* Settings Modal */}
+          {modal === 'settings' && (
+            <section className="modal" role="dialog" aria-modal="true">
+              <div className="modal-topline">
+                <span className="modal-icon"><span className="material-symbols-outlined">settings</span></span>
+                <button className="modal-close" onClick={() => setModal(null)}><span className="material-symbols-outlined">close</span></button>
+              </div>
+              <h2>Board & Profile Settings</h2>
+              <p className="modal-description">Customize your board details and personal identity.</p>
 
-        {modal === 'connect' && <section className="modal connect-modal" role="dialog" aria-modal="true" aria-labelledby="connect-title">
-          <div className="modal-topline"><span className="modal-icon"><Icon name="users" /></span><button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><Icon name="close" /></button></div>
-          <h2 id="connect-title">Bring your team in</h2><p className="modal-description">Connect directly, peer to peer. Board data stays between browsers; PeerJS only helps them discover each other.</p>
-          <div className="connection-steps"><span className="step-indicator active">1</span><span className="step-line" /><span className={`step-indicator ${signalStep !== 'start' ? 'active' : ''}`}>2</span><span className="step-line" /><span className={`step-indicator ${peerState === 'connected' ? 'active' : ''}`}>3</span><span className="steps-caption">Create room <span>·</span> Join by link <span>·</span> Connect</span></div>
-          {peerState === 'connected' ? <div className="connected-state"><span className="connected-icon"><Icon name="check" size={22} /></span><strong>You’re connected!</strong><p>Your boards are syncing directly between browsers.</p>{isHost && <button className="button button-primary button-wide" onClick={() => void copySignal()}><Icon name={inviteCopied ? 'check' : 'copy'} size={16} />{inviteCopied ? 'Invite link copied' : 'Copy board invite'}</button>}<button className="button button-soft" onClick={() => { resetConnection(); setSignalStep('start') }}><Icon name="close" size={15} /> Disconnect peer</button></div>
-            : signalStep === 'start' ? <>
-              <div className="role-tabs"><button className={peerRole === 'host' ? 'selected' : ''} onClick={() => { resetConnection(); setPeerRole('host') }}>I’m hosting</button><button className={peerRole === 'guest' ? 'selected' : ''} onClick={() => { resetConnection(); setPeerRole('guest') }}>I’m joining</button></div>
-              <div className="how-it-works"><span className="how-icon"><Icon name={peerRole === 'host' ? 'link' : 'send'} size={17} /></span><p>{peerRole === 'host' ? <>Create a room, then share its invite link. Your teammate opens the link and joins—no reply code needed.</> : <>Open your teammate’s invite link or paste their room ID to join their board.</>}</p></div>
-              {peerRole === 'host' ? <button className="button button-primary button-wide" onClick={() => void startOwnerRoom(board)} disabled={peerState === 'connecting'}><Icon name="link" size={16} />{peerState === 'connecting' ? 'Creating room…' : 'Create a room invite'}</button>
-                : <form onSubmit={(event) => void joinRoom(event)}><label className="field-label" htmlFor="invite-code">Room ID or invite link</label><input className="text-field" id="invite-code" value={signalText} onChange={(event) => {
-                  const input = event.target.value.trim()
-                  try { setSignalText(new URL(input).searchParams.get('join') ?? input) }
-                  catch { setSignalText(input) }
-                }} placeholder="Paste an invite link or room ID…" required /><button className="button button-primary button-wide join-room-button" type="submit" disabled={peerState === 'connecting'}><Icon name="arrow" size={16} />{peerState === 'connecting' ? 'Joining room…' : 'Join room'}</button></form>}
-              <p className="signaling-note"><Icon name="lock" size={14} /> Board data travels directly between browsers. PeerJS uses a lightweight signaling service to introduce peers; it does not relay your board.</p>
-            </> : signalStep === 'offer' ? <>
-              <div className="exchange-heading"><span className="exchange-step">{peerRole === 'host' ? 'YOUR ROOM IS READY' : 'JOIN REQUEST SENT'}</span><strong>{peerRole === 'host' ? 'Share this link with your teammate' : 'Waiting for the host to connect'}</strong><span>{peerRole === 'host' ? 'They can join directly from the link, or enter the room ID in the Join tab.' : 'The board will sync automatically while the host remains online.'}</span></div>
-              {peerRole === 'host' && <>
-                <div className="room-id-display"><span>ROOM ID</span><code>{signalResult}</code></div>
-                <button className="button button-primary button-wide" onClick={() => void copySignal()}><Icon name={inviteCopied ? 'check' : 'copy'} size={16} />{inviteCopied ? 'Invite link copied' : 'Copy invite link'}</button>
-              </>}
-              <div className="waiting-message"><span className="waiting-spinner" />{peerState === 'failed' ? 'Could not connect — create a new invite and try again.' : peerRole === 'host' ? 'Waiting for your teammate to join…' : 'Connecting directly to the host…'}</div>
-              <button className="text-back" onClick={resetConnection}><Icon name="arrow" size={14} /> Cancel invite</button>
-            </> : null}
-        </section>}
-      </div>}
-      </>}
+              <label className="field-label" htmlFor="board-title-input">Retrospective title</label>
+              <input
+                id="board-title-input"
+                className="text-field"
+                value={editBoardTitle}
+                onChange={(e) => setEditBoardTitle(e.target.value)}
+                maxLength={60}
+              />
+
+              <label className="field-label" htmlFor="profile-name-input">Your name</label>
+              <input
+                id="profile-name-input"
+                className="text-field"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                maxLength={32}
+              />
+
+              <div className="modal-actions">
+                <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => {
+                    if (editName.trim()) {
+                      setParticipantName(editName.trim())
+                      localStorage.setItem('together-retro-name', editName.trim())
+                    }
+                    if (editBoardTitle.trim()) {
+                      setBoard((prev) => ({ ...prev, title: editBoardTitle.trim() }))
+                    }
+                    setModal(null)
+                    toast('Preferences saved.')
+                  }}
+                >
+                  Save changes
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* Connect / Invite P2P Modal */}
+          {modal === 'connect' && (
+            <section className="modal" role="dialog" aria-modal="true">
+              <div className="modal-topline">
+                <span className="modal-icon"><span className="material-symbols-outlined">groups</span></span>
+                <button className="modal-close" onClick={() => setModal(null)}><span className="material-symbols-outlined">close</span></button>
+              </div>
+              <h2>Bring Your Team In</h2>
+              <p className="modal-description">
+                Direct peer-to-peer connection. Anyone with this link can join this retrospective live without an account.
+              </p>
+
+              <div className="flex rounded-xl bg-surface-container-low p-1 border border-outline-variant/30 mb-3">
+                <button
+                  type="button"
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${peerRole === 'host' ? 'bg-surface shadow-sm text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
+                  onClick={() => {
+                    setPeerRole('host')
+                    setSignalStep('offer')
+                  }}
+                >
+                  I'm hosting
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${peerRole === 'guest' ? 'bg-surface shadow-sm text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
+                  onClick={() => {
+                    setPeerRole('guest')
+                    setSignalStep('start')
+                  }}
+                >
+                  I'm joining
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 p-2.5 rounded-xl bg-surface-container border border-outline-variant/40 mb-3 text-xs">
+                <span className={`w-2 h-2 rounded-full ${peerState === 'connected' ? 'bg-secondary animate-pulse' : peerState === 'ready' ? 'bg-primary' : peerState === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-outline'}`} />
+                <span className="font-semibold text-on-surface">
+                  {peerState === 'connected' ? `Connected (${peerCount + 1} live)` : peerState === 'ready' ? (signalStep === 'offer' ? 'Room invite ready' : 'Ready') : peerState === 'connecting' ? 'Connecting to network…' : 'Solo mode'}
+                </span>
+              </div>
+
+              {peerRole === 'host' ? (
+                <>
+                  <div className="p-3 rounded-xl bg-surface-container border border-outline-variant/40 flex flex-col gap-2 mb-4">
+                    <span className="text-[11px] font-semibold text-outline uppercase tracking-wider">Shareable P2P Invite Link</span>
+                    <div className="text-xs text-on-surface break-all font-mono bg-white/80 p-2 rounded-lg border border-outline-variant/30 select-all">
+                      {window.location.origin}{window.location.pathname}?join={signalResult || ownerPeerId || stableHostPeerId(board.id)}&board={board.id}&setup={encodeURIComponent(JSON.stringify({ id: board.id, title: board.title, columns: board.columns.map(c => c.title) }))}
+                    </div>
+                  </div>
+
+                  <div className="modal-actions">
+                    {peerState === 'connected' && (
+                      <button
+                        type="button"
+                        className="btn-secondary !text-error !border-error/30 hover:!bg-error-container/20"
+                        onClick={() => {
+                          resetConnection()
+                          setSignalStep('start')
+                          toast('Disconnected from P2P room.')
+                        }}
+                      >
+                        Disconnect
+                      </button>
+                    )}
+                    <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Close</button>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => void copyInviteDirect()}
+                    >
+                      <span className="material-symbols-outlined text-[16px]">content_copy</span>
+                      <span>{inviteCopied ? 'Invite link copied' : 'Copy invite link'}</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <form onSubmit={(e) => void joinRoom(e)} className="flex flex-col gap-3">
+                    <label className="field-label !m-0" htmlFor="connect-input-peer">Room ID or invite link</label>
+                    <input
+                      id="connect-input-peer"
+                      className="text-field"
+                      value={signalText}
+                      onChange={(e) => {
+                        const input = e.target.value.trim()
+                        try {
+                          setSignalText(new URL(input).searchParams.get('join') ?? input)
+                        } catch {
+                          setSignalText(input)
+                        }
+                      }}
+                      placeholder="Paste room ID or invite link…"
+                      required
+                    />
+                    <div className="modal-actions">
+                      {peerState === 'connected' && (
+                        <button
+                          type="button"
+                          className="btn-secondary !text-error !border-error/30 hover:!bg-error-container/20"
+                          onClick={() => {
+                            resetConnection()
+                            setSignalStep('start')
+                            toast('Disconnected from P2P room.')
+                          }}
+                        >
+                          Disconnect
+                        </button>
+                      )}
+                      <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Close</button>
+                      <button type="submit" className="btn-primary" disabled={peerState === 'connecting'}>
+                        <span className="material-symbols-outlined text-[16px]">login</span>
+                        <span>{peerState === 'connecting' ? 'Connecting…' : 'Join room'}</span>
+                      </button>
+                    </div>
+                  </form>
+                </>
+              )}
+            </section>
+          )}
+        </div>
+      )}
     </div>
   )
 }

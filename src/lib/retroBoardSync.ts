@@ -6,6 +6,13 @@ export type RetroColumn = {
   color: 'mint' | 'peach' | 'lavender' | 'blue' | 'yellow'
 }
 
+export type RetroComment = {
+  id: string
+  author: string
+  text: string
+  createdAt: number
+}
+
 export type RetroNote = {
   id: string
   columnId: string
@@ -16,6 +23,14 @@ export type RetroNote = {
   voteIds: string[]
   reactions: Record<string, string[]>
   createdAt: number
+  comments: RetroComment[]
+  done: boolean
+  priority?: 'high' | 'normal'
+  dueDate?: string
+  assignees?: string[]
+  badgeEmoji?: string
+  typingPresence?: string
+  priorityBorder?: 'error' | 'tertiary' | 'secondary'
 }
 
 export type RetroTimer = {
@@ -37,8 +52,7 @@ export type RetroBoard = {
 
 const ROOT_NAME = 'together-retro'
 const META_FIELDS = ['id', 'title', 'updatedAt', 'retentionDays', 'locked'] as const
-const DEFAULT_TIMER: RetroTimer = { durationMinutes: 15, remainingSeconds: 15 * 60, endsAt: null }
-const TIMER_PRESETS = [5, 10, 15, 20, 30, 45, 60]
+const DEFAULT_TIMER: RetroTimer = { durationMinutes: 10, remainingSeconds: 10 * 60, endsAt: null }
 
 function getNestedMap(parent: Y.Map<unknown>, key: string): Y.Map<unknown> {
   const current = parent.get(key)
@@ -55,7 +69,7 @@ function setIfChanged(map: Y.Map<unknown>, key: string, value: unknown): void {
 
 function isRetroTimer(value: unknown): value is RetroTimer {
   return typeof value === 'object' && value !== null &&
-    'durationMinutes' in value && typeof value.durationMinutes === 'number' && TIMER_PRESETS.includes(value.durationMinutes) &&
+    'durationMinutes' in value && typeof value.durationMinutes === 'number' && Number.isSafeInteger(value.durationMinutes) && value.durationMinutes > 0 &&
     'remainingSeconds' in value && typeof value.remainingSeconds === 'number' &&
     Number.isSafeInteger(value.remainingSeconds) && value.remainingSeconds >= 0 &&
     'endsAt' in value && (value.endsAt === null || (typeof value.endsAt === 'number' && Number.isFinite(value.endsAt)))
@@ -81,6 +95,17 @@ function isNote(value: unknown): value is RetroNote {
     Object.entries(value.reactions).every(([emoji, actors]) =>
       emoji.length > 0 && emoji.length <= 8 && Array.isArray(actors) && actors.every((actor) => typeof actor === 'string'),
     ) &&
+    'createdAt' in value && typeof value.createdAt === 'number' &&
+    'comments' in value && Array.isArray(value.comments) &&
+    value.comments.every((comment: unknown) => isRetroComment(comment)) &&
+    'done' in value && typeof value.done === 'boolean'
+}
+
+function isRetroComment(value: unknown): value is RetroComment {
+  if (typeof value !== 'object' || value === null) return false
+  return 'id' in value && typeof value.id === 'string' &&
+    'author' in value && typeof value.author === 'string' &&
+    'text' in value && typeof value.text === 'string' &&
     'createdAt' in value && typeof value.createdAt === 'number'
 }
 
@@ -133,6 +158,32 @@ export function writeRetroBoard(doc: Y.Doc, board: RetroBoard): void {
       setIfChanged(sharedNote, 'author', note.author)
       setIfChanged(sharedNote, 'anonymous', note.anonymous)
       setIfChanged(sharedNote, 'createdAt', note.createdAt)
+      setIfChanged(sharedNote, 'done', note.done)
+      if (note.priority !== undefined) setIfChanged(sharedNote, 'priority', note.priority)
+      if (note.dueDate !== undefined) setIfChanged(sharedNote, 'dueDate', note.dueDate)
+      if (note.badgeEmoji !== undefined) setIfChanged(sharedNote, 'badgeEmoji', note.badgeEmoji)
+      if (note.typingPresence !== undefined) setIfChanged(sharedNote, 'typingPresence', note.typingPresence)
+      if (note.priorityBorder !== undefined) setIfChanged(sharedNote, 'priorityBorder', note.priorityBorder)
+      if (Array.isArray(note.assignees)) {
+        const assigneesMap = getNestedMap(sharedNote, 'assignees')
+        const currentAssignees = new Set(note.assignees)
+        for (const key of assigneesMap.keys()) {
+          if (!currentAssignees.has(key)) assigneesMap.delete(key)
+        }
+        for (const a of note.assignees) setIfChanged(assigneesMap, a, true)
+      }
+      const comments = getNestedMap(sharedNote, 'comments')
+      const liveCommentIds = new Set(note.comments.map((comment) => comment.id))
+      for (const id of comments.keys()) {
+        if (!liveCommentIds.has(id)) comments.delete(id)
+      }
+      for (const comment of note.comments) {
+        const sharedComment = getNestedMap(comments, comment.id)
+        setIfChanged(sharedComment, 'id', comment.id)
+        setIfChanged(sharedComment, 'author', comment.author)
+        setIfChanged(sharedComment, 'text', comment.text)
+        setIfChanged(sharedComment, 'createdAt', comment.createdAt)
+      }
       const voteCollection = getNestedMap(sharedNote, 'voteIds')
       for (const voteId of note.voteIds) setIfChanged(voteCollection, voteId, true)
       const reactionCollection = getNestedMap(sharedNote, 'reactions')
@@ -176,7 +227,7 @@ export function readRetroBoard(doc: Y.Doc): RetroBoard | null {
     .filter(isColumn)
   const boardNotes = [...notes.values()]
     .filter((value): value is Y.Map<unknown> => value instanceof Y.Map)
-    .map((note) => ({
+    .map((note): unknown => ({
       id: note.get('id'),
       columnId: note.get('columnId'),
       text: note.get('text'),
@@ -194,6 +245,25 @@ export function readRetroBoard(doc: Y.Doc): RetroBoard | null {
           )
         : {},
       createdAt: note.get('createdAt'),
+      comments: note.get('comments') instanceof Y.Map
+        ? [...(note.get('comments') as Y.Map<unknown>).values()]
+            .filter((value): value is Y.Map<unknown> => value instanceof Y.Map)
+            .map((comment) => ({
+              id: comment.get('id'),
+              author: comment.get('author'),
+              text: comment.get('text'),
+              createdAt: comment.get('createdAt'),
+            }))
+            .filter(isRetroComment)
+            .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+        : [],
+      done: note.get('done') === true,
+      priority: typeof note.get('priority') === 'string' ? note.get('priority') as 'high' | 'normal' : undefined,
+      dueDate: typeof note.get('dueDate') === 'string' ? note.get('dueDate') as string : undefined,
+      badgeEmoji: typeof note.get('badgeEmoji') === 'string' ? note.get('badgeEmoji') as string : undefined,
+      typingPresence: typeof note.get('typingPresence') === 'string' ? note.get('typingPresence') as string : undefined,
+      priorityBorder: typeof note.get('priorityBorder') === 'string' ? note.get('priorityBorder') as 'error' | 'tertiary' | 'secondary' : undefined,
+      assignees: note.get('assignees') instanceof Y.Map ? [...(note.get('assignees') as Y.Map<unknown>).keys()] : undefined,
     }))
     .filter(isNote)
     .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
