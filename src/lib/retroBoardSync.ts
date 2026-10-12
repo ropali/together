@@ -9,6 +9,7 @@ export type RetroColumn = {
 export type RetroComment = {
   id: string
   author: string
+  authorId?: string
   text: string
   createdAt: number
 }
@@ -18,6 +19,7 @@ export type RetroNote = {
   columnId: string
   text: string
   author: string
+  authorId?: string
   anonymous: boolean
   votes: number
   voteIds: string[]
@@ -88,6 +90,7 @@ function isNote(value: unknown): value is RetroNote {
     'columnId' in value && typeof value.columnId === 'string' &&
     'text' in value && typeof value.text === 'string' &&
     'author' in value && typeof value.author === 'string' &&
+    (!('authorId' in value) || typeof value.authorId === 'string') &&
     'anonymous' in value && typeof value.anonymous === 'boolean' &&
     'votes' in value && typeof value.votes === 'number' &&
     'voteIds' in value && Array.isArray(value.voteIds) && value.voteIds.every((id) => typeof id === 'string') &&
@@ -105,6 +108,7 @@ function isRetroComment(value: unknown): value is RetroComment {
   if (typeof value !== 'object' || value === null) return false
   return 'id' in value && typeof value.id === 'string' &&
     'author' in value && typeof value.author === 'string' &&
+    (!('authorId' in value) || typeof value.authorId === 'string') &&
     'text' in value && typeof value.text === 'string' &&
     'createdAt' in value && typeof value.createdAt === 'number'
 }
@@ -156,6 +160,7 @@ export function writeRetroBoard(doc: Y.Doc, board: RetroBoard): void {
       setIfChanged(sharedNote, 'columnId', note.columnId)
       setIfChanged(sharedNote, 'text', note.text)
       setIfChanged(sharedNote, 'author', note.author)
+      if (note.authorId !== undefined) setIfChanged(sharedNote, 'authorId', note.authorId)
       setIfChanged(sharedNote, 'anonymous', note.anonymous)
       setIfChanged(sharedNote, 'createdAt', note.createdAt)
       setIfChanged(sharedNote, 'done', note.done)
@@ -181,6 +186,7 @@ export function writeRetroBoard(doc: Y.Doc, board: RetroBoard): void {
         const sharedComment = getNestedMap(comments, comment.id)
         setIfChanged(sharedComment, 'id', comment.id)
         setIfChanged(sharedComment, 'author', comment.author)
+        if (comment.authorId !== undefined) setIfChanged(sharedComment, 'authorId', comment.authorId)
         setIfChanged(sharedComment, 'text', comment.text)
         setIfChanged(sharedComment, 'createdAt', comment.createdAt)
       }
@@ -232,6 +238,7 @@ export function readRetroBoard(doc: Y.Doc): RetroBoard | null {
       columnId: note.get('columnId'),
       text: note.get('text'),
       author: note.get('author'),
+      authorId: note.get('authorId'),
       anonymous: note.get('anonymous'),
       votes: note.get('voteIds') instanceof Y.Map ? (note.get('voteIds') as Y.Map<unknown>).size : Number(note.get('votes') ?? 0),
       voteIds: note.get('voteIds') instanceof Y.Map
@@ -248,9 +255,10 @@ export function readRetroBoard(doc: Y.Doc): RetroBoard | null {
       comments: note.get('comments') instanceof Y.Map
         ? [...(note.get('comments') as Y.Map<unknown>).values()]
             .filter((value): value is Y.Map<unknown> => value instanceof Y.Map)
-            .map((comment) => ({
+            .map((comment): unknown => ({
               id: comment.get('id'),
               author: comment.get('author'),
+              authorId: comment.get('authorId'),
               text: comment.get('text'),
               createdAt: comment.get('createdAt'),
             }))

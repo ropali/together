@@ -530,20 +530,24 @@ function App() {
 
   const deleteNote = (noteId: string) => {
     if (board.locked) return
+    if (!board.notes.some((note) => note.id === noteId && note.authorId === reactionActorId)) return
     setBoard((current) => ({
       ...current,
-      notes: current.notes.filter((n) => n.id !== noteId),
+      notes: current.notes.filter((note) => note.id !== noteId || note.authorId !== reactionActorId),
     }))
     toast('Note deleted.')
   }
 
   const deleteComment = (noteId: string, commentId: string) => {
     if (board.locked) return
+    if (!board.notes.some((note) =>
+      note.id === noteId && note.comments.some((comment) => comment.id === commentId && comment.authorId === reactionActorId),
+    )) return
     setBoard((current) => ({
       ...current,
       notes: current.notes.map((note) =>
         note.id === noteId
-          ? { ...note, comments: note.comments.filter((c) => c.id !== commentId) }
+          ? { ...note, comments: note.comments.filter((comment) => comment.id !== commentId || comment.authorId !== reactionActorId) }
           : note,
       ),
     }))
@@ -558,6 +562,7 @@ function App() {
       columnId,
       text,
       author: anonymous ? 'Anonymous' : (participantName.trim() || 'Anonymous'),
+      authorId: reactionActorId,
       anonymous,
       votes: 0,
       voteIds: [],
@@ -578,6 +583,7 @@ function App() {
     const comment: RetroComment = {
       id: crypto.randomUUID(),
       author: anonymous ? 'Anonymous' : (participantName.trim() || 'Anonymous'),
+      authorId: reactionActorId,
       text,
       createdAt: timerNow,
     }
@@ -1412,14 +1418,16 @@ function App() {
                                   <span className="font-label-md text-label-md text-on-surface font-medium truncate">{note.author}</span>
                                   <span className="text-outline text-[12px] shrink-0">• {relativeTime(note.createdAt, timerNow)}</span>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => deleteNote(note.id)}
-                                  className="text-outline hover:text-error opacity-0 group-hover/card:opacity-100 transition-opacity p-1 rounded hover:bg-error-container/20 cursor-pointer"
-                                  title="Delete note"
-                                >
-                                  <span className="material-symbols-outlined text-[16px]">delete</span>
-                                </button>
+                                {note.authorId === reactionActorId && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteNote(note.id)}
+                                    className="text-outline hover:text-error opacity-0 group-hover/card:opacity-100 transition-opacity p-1 rounded hover:bg-error-container/20 cursor-pointer"
+                                    title="Delete note"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">delete</span>
+                                  </button>
+                                )}
                               </div>
 
                               {/* Body with Markdown rendering */}
@@ -1523,14 +1531,16 @@ function App() {
                                           <span className="font-label-sm text-label-sm text-on-surface font-semibold">{comment.author}</span>
                                           <span className="text-[11px] text-outline">• {relativeTime(comment.createdAt, timerNow)}</span>
                                         </div>
-                                        <button
-                                          type="button"
-                                          onClick={() => deleteComment(note.id, comment.id)}
-                                          className="text-outline hover:text-error opacity-0 group-hover/comment:opacity-100 transition-opacity p-0.5 rounded cursor-pointer"
-                                          title="Delete comment"
-                                        >
-                                          <span className="material-symbols-outlined text-[14px]">delete</span>
-                                        </button>
+                                        {comment.authorId === reactionActorId && (
+                                          <button
+                                            type="button"
+                                            onClick={() => deleteComment(note.id, comment.id)}
+                                            className="text-outline hover:text-error opacity-0 group-hover/comment:opacity-100 transition-opacity p-0.5 rounded cursor-pointer"
+                                            title="Delete comment"
+                                          >
+                                            <span className="material-symbols-outlined text-[14px]">delete</span>
+                                          </button>
+                                        )}
                                       </div>
                                       <div className="text-on-surface pl-6 leading-relaxed break-words text-body-sm">
                                         <MarkdownView content={comment.text} />
