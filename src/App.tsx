@@ -1296,7 +1296,12 @@ function App() {
 
             {/* RETRO BOARD 4-COLUMN HORIZONTAL CANVAS */}
             <div className="w-full overflow-x-auto pb-4 pt-1 snap-x no-scrollbar">
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-gutter min-w-[320px] xl:min-w-[1380px]">
+              <div
+                className="grid w-full grid-flow-col auto-cols-fr gap-gutter"
+                style={{
+                  minWidth: `max(100%, ${board.columns.length * 320 + (board.columns.length - 1) * 20}px)`,
+                }}
+              >
                 {ensureActionItemsAtLast(board.columns).map((column, colIndex) => {
                   const meta = getColumnMeta(column.title, colIndex)
                   const columnNotes = board.notes
@@ -1373,9 +1378,10 @@ function App() {
                           rows={2}
                         />
                         <div className="flex items-center justify-between pt-2 mt-1">
-                          <span className="text-[11px] text-outline font-normal flex items-center gap-1 select-none" title="Markdown supported: **bold**, *italic*, `code`, - list, > quote, [link](url)">
-                            <span className="material-symbols-outlined text-[14px]">format_underlined</span>
-                            <span>Markdown supported</span>
+                          <span className="flex items-center text-outline select-none" title="Markdown supported: **bold**, *italic*, `code`, - list, > quote, [link](url)">
+                            <svg aria-label="Markdown" role="img" className="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" fill="currentColor">
+                              <path d="M593.8 123.1L46.2 123.1C20.7 123.1 0 143.8 0 169.2L0 470.7C0 496.2 20.7 516.9 46.2 516.9L593.9 516.9C619.4 516.9 640.1 496.2 640 470.8L640 169.2C640 143.8 619.3 123.1 593.8 123.1zM338.5 424.6L277 424.6L277 304.6L215.5 381.5L154 304.6L154 424.6L92.3 424.6L92.3 215.4L153.8 215.4L215.3 292.3L276.8 215.4L338.3 215.4L338.3 424.6L338.5 424.6zM473.8 427.7L381.5 320L443 320L443 215.4L504.5 215.4L504.5 320L566 320L473.8 427.7z" />
+                            </svg>
                           </span>
                           <button
                             className={`inline-flex items-center gap-1 px-3 py-1 rounded-lg ${meta.buttonBg} hover:opacity-90 font-label-md text-label-md shadow-sm transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`}
