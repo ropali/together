@@ -50,6 +50,11 @@ export type RetroBoard = {
   notes: RetroNote[]
   locked: boolean
   timer: RetroTimer
+  starred?: boolean
+  status?: 'active' | 'completed'
+  frameworkTag?: string
+  participantCount?: number
+  participantAvatars?: string[]
 }
 
 const ROOT_NAME = 'together-retro'
@@ -120,6 +125,7 @@ export function writeRetroBoard(doc: Y.Doc, board: RetroBoard): void {
     for (const key of META_FIELDS) {
       setIfChanged(meta, key, board[key])
     }
+    if (board.status !== undefined) setIfChanged(meta, 'status', board.status)
 
     const timer = getNestedMap(root, 'timer')
     setIfChanged(timer, 'durationMinutes', board.timer.durationMinutes)
@@ -289,6 +295,7 @@ export function readRetroBoard(doc: Y.Doc): RetroBoard | null {
     updatedAt: meta.get('updatedAt'),
     retentionDays: meta.get('retentionDays'),
     locked: meta.get('locked'),
+    status: meta.get('status') === 'active' || meta.get('status') === 'completed' ? meta.get('status') : undefined,
     columns: orderedColumns,
     notes: boardNotes,
     timer: timerState,

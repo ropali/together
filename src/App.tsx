@@ -10,6 +10,7 @@ import {
 } from './lib/retroBoardSync'
 import togetherLogo from './assets/together-logo.png'
 import { MarkdownView } from './components/MarkdownView'
+import { DashboardView } from './components/DashboardView'
 import './App.css'
 
 type Note = RetroNote
@@ -19,6 +20,27 @@ type Modal = 'connect' | 'settings' | 'new-board' | 'guest-name' | null
 const REACTION_ACTOR_KEY = 'together-retro-reaction-actor-v5'
 const STORAGE_KEY = 'together-retro-boards-v5'
 const ACTIVE_BOARD_KEY = 'together-retro-active-board-v5'
+const BOARD_IDLE_TIMEOUT_MS = 60 * 60 * 1000
+const LEGACY_DEMO_BOARD_IDS = new Set([
+  'sprint-42',
+  'sprint-41',
+  'sprint-40',
+  'retro-q3-alignment',
+  'sprint-39',
+  'sprint-38',
+  'sprint-37',
+  'sprint-36',
+  'retro-q2-retro',
+  'sprint-35',
+  'sprint-34',
+  'sprint-33',
+  'sprint-32',
+  'sprint-31',
+  'retro-q1-retro',
+  'sprint-30',
+  'sprint-29',
+  'sprint-43',
+])
 
 function getReactionActorId(): string {
   const saved = localStorage.getItem(REACTION_ACTOR_KEY)
@@ -33,6 +55,92 @@ function ensureActionItemsAtLast<T extends { title?: string } | string>(columns:
   const nonActions = columns.filter((c) => !getTitle(c).toLowerCase().includes('action'))
   const actions = columns.filter((c) => getTitle(c).toLowerCase().includes('action'))
   return [...nonActions, ...actions]
+}
+
+function isBoardActive(board: BoardData): boolean {
+  return !board.locked && board.status !== 'completed'
+}
+
+function completeBoard(board: BoardData, now: number): BoardData {
+  const remainingSeconds = board.timer.endsAt === null
+    ? board.timer.remainingSeconds
+    : Math.max(0, Math.ceil((board.timer.endsAt - now) / 1000))
+  return {
+    ...board,
+    status: 'completed',
+    locked: true,
+    updatedAt: now,
+    timer: { ...board.timer, remainingSeconds, endsAt: null },
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isImportedBoard(value: unknown): value is BoardData {
+  if (!isRecord(value) ||
+    typeof value.id !== 'string' || !value.id ||
+    typeof value.title !== 'string' || !value.title ||
+    typeof value.updatedAt !== 'number' || !Number.isFinite(value.updatedAt) ||
+    typeof value.retentionDays !== 'number' || !Number.isFinite(value.retentionDays) ||
+    typeof value.locked !== 'boolean' ||
+    !Array.isArray(value.columns) || value.columns.length < 2 || value.columns.length > 5 ||
+    !Array.isArray(value.notes) ||
+    !isRecord(value.timer) ||
+    typeof value.timer.durationMinutes !== 'number' || !Number.isSafeInteger(value.timer.durationMinutes) || value.timer.durationMinutes <= 0 ||
+    typeof value.timer.remainingSeconds !== 'number' || !Number.isSafeInteger(value.timer.remainingSeconds) || value.timer.remainingSeconds < 0 ||
+    !(value.timer.endsAt === null || (typeof value.timer.endsAt === 'number' && Number.isFinite(value.timer.endsAt))) ||
+    ('status' in value && value.status !== 'active' && value.status !== 'completed') ||
+    ('starred' in value && typeof value.starred !== 'boolean') ||
+    ('frameworkTag' in value && typeof value.frameworkTag !== 'string') ||
+    ('participantCount' in value && (typeof value.participantCount !== 'number' || !Number.isFinite(value.participantCount))) ||
+    ('participantAvatars' in value && (!Array.isArray(value.participantAvatars) || !value.participantAvatars.every((avatar) => typeof avatar === 'string')))
+  ) return false
+
+  const columnIds = new Set<string>()
+  for (const column of value.columns) {
+    if (!isRecord(column) || typeof column.id !== 'string' || !column.id ||
+      typeof column.title !== 'string' ||
+      !['mint', 'peach', 'lavender', 'blue', 'yellow'].includes(String(column.color)) ||
+      columnIds.has(column.id)
+    ) return false
+    columnIds.add(column.id)
+  }
+
+  const noteIds = new Set<string>()
+  for (const note of value.notes) {
+    if (!isRecord(note) ||
+      typeof note.id !== 'string' || !note.id || noteIds.has(note.id) ||
+      typeof note.columnId !== 'string' || !columnIds.has(note.columnId) ||
+      typeof note.text !== 'string' ||
+      typeof note.author !== 'string' ||
+      ('authorId' in note && typeof note.authorId !== 'string') ||
+      typeof note.anonymous !== 'boolean' ||
+      typeof note.votes !== 'number' || !Number.isFinite(note.votes) ||
+      !Array.isArray(note.voteIds) || !note.voteIds.every((id) => typeof id === 'string') ||
+      !isRecord(note.reactions) ||
+      !Object.entries(note.reactions).every(([emoji, actors]) =>
+        emoji.length > 0 && emoji.length <= 8 && Array.isArray(actors) && actors.every((actor) => typeof actor === 'string'),
+      ) ||
+      typeof note.createdAt !== 'number' || !Number.isFinite(note.createdAt) ||
+      !Array.isArray(note.comments) ||
+      !note.comments.every((comment) =>
+        isRecord(comment) && typeof comment.id === 'string' && typeof comment.author === 'string' &&
+        (!('authorId' in comment) || typeof comment.authorId === 'string') &&
+        typeof comment.text === 'string' && typeof comment.createdAt === 'number' && Number.isFinite(comment.createdAt),
+      ) ||
+      typeof note.done !== 'boolean' ||
+      ('priority' in note && note.priority !== 'high' && note.priority !== 'normal') ||
+      ('dueDate' in note && typeof note.dueDate !== 'string') ||
+      ('assignees' in note && (!Array.isArray(note.assignees) || !note.assignees.every((assignee) => typeof assignee === 'string'))) ||
+      ('badgeEmoji' in note && typeof note.badgeEmoji !== 'string') ||
+      ('typingPresence' in note && typeof note.typingPresence !== 'string') ||
+      ('priorityBorder' in note && !['error', 'tertiary', 'secondary'].includes(String(note.priorityBorder)))
+    ) return false
+    noteIds.add(note.id)
+  }
+  return true
 }
 
 const DEFAULT_COLUMN_TITLES = ['What went well', 'What went wrong', 'Kudos & Shoutouts', 'Action items']
@@ -69,16 +177,15 @@ const boardRouteDetails = (() => {
 const sharedBoardId = routeParams.get('board')?.trim() || boardRouteDetails?.id || ''
 
 const initialBoard: BoardData = {
-  id: 'sprint-retro',
-  title: 'Sprint Retrospective',
+  id: 'new-retro',
+  title: 'Retrospective',
   updatedAt: Date.now(),
   retentionDays: 0,
-  columns: [
-    { id: 'col-well', title: 'What went well', color: 'mint' },
-    { id: 'col-wrong', title: 'What went wrong', color: 'peach' },
-    { id: 'col-kudos', title: 'Kudos & Shoutouts', color: 'blue' },
-    { id: 'col-actions', title: 'Action items', color: 'lavender' },
-  ],
+  columns: DEFAULT_COLUMN_TITLES.map((title, index) => ({
+    id: `col-${index + 1}`,
+    title,
+    color: (['mint', 'peach', 'blue', 'lavender'] as RetroColumn['color'][])[index]!,
+  })),
   notes: [],
   locked: false,
   timer: { durationMinutes: 10, remainingSeconds: 10 * 60, endsAt: null },
@@ -221,8 +328,9 @@ function readBoards(): BoardData[] {
     if (saved) {
       const parsed: unknown = JSON.parse(saved)
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return (parsed as BoardData[]).map((b) => {
-          const timer = !b.timer || b.timer.endsAt === null || b.timer.durationMinutes === 15
+        const now = Date.now()
+        const loaded = (parsed as BoardData[]).filter((b) => !LEGACY_DEMO_BOARD_IDS.has(b.id)).map((b) => {
+          const timer = !b.timer || b.timer.durationMinutes === 15
             ? { durationMinutes: 10, remainingSeconds: 10 * 60, endsAt: null }
             : b.timer
           return {
@@ -236,6 +344,18 @@ function readBoards(): BoardData[] {
               return col
             })),
           }
+        })
+        const eligibleBoards = loaded.map((b) =>
+          isBoardActive(b) && now - b.updatedAt >= BOARD_IDLE_TIMEOUT_MS ? completeBoard(b, now) : b,
+        )
+        const activeBoards = eligibleBoards
+          .filter(isBoardActive)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+        const currentActiveBoardId = activeBoards[0]?.id
+        return eligibleBoards.map((savedBoard) => {
+          const isActive = isBoardActive(savedBoard)
+          if (!isActive || savedBoard.id === currentActiveBoardId) return savedBoard
+          return completeBoard(savedBoard, now)
         })
       }
     }
@@ -254,6 +374,17 @@ function createBoardData(title: string, columnTitles: string[]): BoardData {
     title,
     updatedAt: Date.now(),
     retentionDays: 0,
+    status: 'active',
+    starred: false,
+    participantCount: 1,
+    participantAvatars: ['YOU'],
+    frameworkTag: orderedTitles.some((t) => t.toLowerCase().includes('stop'))
+      ? 'Start / Stop / Continue'
+      : orderedTitles.some((t) => t.toLowerCase().includes('glad'))
+      ? 'Mad / Sad / Glad'
+      : orderedTitles.some((t) => t.toLowerCase().includes('liked'))
+      ? '4Ls Framework'
+      : 'Went Well / Better',
     columns: orderedTitles.map((columnTitle, index) => ({
       id: `col-${index + 1}-${columnTitle.toLowerCase().replace(/[^a-z0-9]/g, '') || index}`,
       title: columnTitle.toLowerCase() === 'could be better' || columnTitle === 'What Went Wrong' ? 'What went wrong' : columnTitle,
@@ -369,10 +500,12 @@ function App() {
     boardFromRouteDetails() ??
     (!joinPeerId && !ownerPeerId ? boards[0] : undefined) ??
     (joinPeerId || ownerPeerId ? emptyBoard : initialBoard)
+  const boardReadOnly = board.locked || board.status === 'completed'
 
   const setBoard = (update: SetStateAction<BoardData>) => {
+    if (boardReadOnly) return
     setBoards((current) => current.map((savedBoard) => {
-      if (savedBoard.id !== board.id) return savedBoard
+      if (savedBoard.id !== board.id || !isBoardActive(savedBoard)) return savedBoard
       const next = typeof update === 'function' ? update(savedBoard) : update
       return next === savedBoard ? savedBoard : { ...next, updatedAt: Date.now() }
     }))
@@ -394,9 +527,66 @@ function App() {
   const [editBoardTitle, setEditBoardTitle] = useState(board.title)
   const [newBoardTitle, setNewBoardTitle] = useState('')
   const [newBoardColumns, setNewBoardColumns] = useState<string[]>(DEFAULT_COLUMN_TITLES)
-  const [boardCreatedThisVisit, setBoardCreatedThisVisit] = useState(false)
+  const [currentView, setCurrentView] = useState<'dashboard' | 'board'>(() => {
+    if (joinPeerId || ownerPeerId) return 'board'
+    return 'dashboard'
+  })
   const [notice, setNotice] = useState('')
   const chimePlayedRef = useRef(false)
+
+  const toggleStar = (boardId: string) => {
+    setBoards((current) =>
+      current.map((b) => (b.id === boardId ? { ...b, starred: !b.starred } : b)),
+    )
+  }
+
+  const importBoards = (data: unknown): { imported: number; skipped: number; error?: string } => {
+    if (!Array.isArray(data) || data.length === 0 || !data.every(isImportedBoard)) {
+      return { imported: 0, skipped: 0, error: 'Invalid file. Choose a Together Retro JSON export containing valid boards.' }
+    }
+
+    const existingIds = new Set(boards.map((board) => board.id))
+    const importedIds = new Set<string>()
+    const newBoards: BoardData[] = []
+    for (const importedBoard of data) {
+      if (existingIds.has(importedBoard.id) || importedIds.has(importedBoard.id)) continue
+      importedIds.add(importedBoard.id)
+      newBoards.push({
+        ...importedBoard,
+        columns: ensureActionItemsAtLast(importedBoard.columns),
+      })
+    }
+    if (newBoards.length === 0) {
+      return { imported: 0, skipped: data.length }
+    }
+
+    const now = Date.now()
+    const mergedBoards = [...boards, ...newBoards].map((board) =>
+      isBoardActive(board) && now - board.updatedAt >= BOARD_IDLE_TIMEOUT_MS ? completeBoard(board, now) : board,
+    )
+    const activeBoards = mergedBoards.filter(isBoardActive).sort((a, b) => b.updatedAt - a.updatedAt)
+    const currentActiveId = activeBoards[0]?.id
+    const normalizedBoards = mergedBoards.map((board) =>
+      isBoardActive(board) && board.id !== currentActiveId ? completeBoard(board, now) : board,
+    )
+    setBoards(normalizedBoards)
+    return { imported: newBoards.length, skipped: data.length - newBoards.length }
+  }
+
+  const handleJoinFromDashboard = (codeOrUrl: string) => {
+    let peerId = codeOrUrl.trim()
+    try {
+      if (peerId.includes('?') || peerId.includes('//')) {
+        const parsedUrl = new URL(peerId.startsWith('http') ? peerId : `https://${peerId}`)
+        peerId = parsedUrl.searchParams.get('join') || parsedUrl.searchParams.get('owner') || peerId
+      }
+    } catch {
+      // raw text
+    }
+    setPendingPeerId(peerId)
+    setGuestName(participantName)
+    setModal('guest-name')
+  }
 
   // P2P State
   type PeerRole = 'host' | 'guest'
@@ -413,6 +603,7 @@ function App() {
   const [inviteCopied, setInviteCopied] = useState(false)
 
   const roomRef = useRef<P2PYjsRoom | null>(null)
+  const roomBoardIdRef = useRef<string | null>(null)
   const autoHostStartedRef = useRef(false)
   const startOwnerRoomRef = useRef<(ownerBoard: BoardData, displayName?: string) => Promise<boolean>>(async () => false)
   const announcedPeersRef = useRef(new Set<string>())
@@ -433,7 +624,7 @@ function App() {
     } catch (error) {
       console.warn('Could not save retro boards locally.', error)
     }
-    if (roomRef.current) {
+    if (roomRef.current && roomBoardIdRef.current === board.id) {
       if (isHost || roomRef.current.peers.length > 0) {
         try {
           writeRetroBoard(roomRef.current.doc, board)
@@ -442,7 +633,7 @@ function App() {
         }
       }
     }
-    if (isHost && roomRef.current) {
+    if (isHost && roomRef.current && roomBoardIdRef.current === board.id) {
       window.history.replaceState(null, '', updateBoardUrl(board, 'owner', roomRef.current.id))
     }
   }, [board, boards, peerState, isHost])
@@ -452,6 +643,19 @@ function App() {
       setTimerNow(Date.now())
     }, 1000)
     return () => window.clearInterval(timerInterval)
+  }, [])
+
+  useEffect(() => {
+    const closeIdleBoards = () => {
+      const now = Date.now()
+      setBoards((current) => current.map((savedBoard) =>
+        isBoardActive(savedBoard) && now - savedBoard.updatedAt >= BOARD_IDLE_TIMEOUT_MS
+          ? completeBoard(savedBoard, now)
+          : savedBoard,
+      ))
+    }
+    const idleCheckInterval = window.setInterval(closeIdleBoards, 60_000)
+    return () => window.clearInterval(idleCheckInterval)
   }, [])
 
   useEffect(() => {
@@ -490,7 +694,7 @@ function App() {
 
   // Voting micro-interaction
   const toggleVote = (noteId: string) => {
-    if (board.locked) return
+    if (boardReadOnly) return
     setBoard((current) => ({
       ...current,
       notes: current.notes.map((note) => {
@@ -508,7 +712,7 @@ function App() {
   }
 
   const toggleReaction = (noteId: string, emoji: string) => {
-    if (board.locked) return
+    if (boardReadOnly) return
     setBoard((current) => ({
       ...current,
       notes: current.notes.map((note) => {
@@ -529,7 +733,7 @@ function App() {
   }
 
   const deleteNote = (noteId: string) => {
-    if (board.locked) return
+    if (boardReadOnly) return
     if (!board.notes.some((note) => note.id === noteId && note.authorId === reactionActorId)) return
     setBoard((current) => ({
       ...current,
@@ -539,7 +743,7 @@ function App() {
   }
 
   const deleteComment = (noteId: string, commentId: string) => {
-    if (board.locked) return
+    if (boardReadOnly) return
     if (!board.notes.some((note) =>
       note.id === noteId && note.comments.some((comment) => comment.id === commentId && comment.authorId === reactionActorId),
     )) return
@@ -556,7 +760,7 @@ function App() {
   const addInlineNote = (event: FormEvent, columnId: string) => {
     event.preventDefault()
     const text = inlineDrafts[columnId]?.trim()
-    if (!text || board.locked) return
+    if (!text || boardReadOnly) return
     const newNote: Note = {
       id: crypto.randomUUID(),
       columnId,
@@ -579,7 +783,7 @@ function App() {
   const addComment = (event: FormEvent, noteId: string) => {
     event.preventDefault()
     const text = commentDrafts[noteId]?.trim()
-    if (!text || board.locked) return
+    if (!text || boardReadOnly) return
     const comment: RetroComment = {
       id: crypto.randomUUID(),
       author: anonymous ? 'Anonymous' : (participantName.trim() || 'Anonymous'),
@@ -607,6 +811,7 @@ function App() {
   const timeLeftLabel = timerSeconds <= 0 ? '0m left' : timerSeconds < 60 ? `${timerSeconds}s left` : `${minutesLeft}m left`
 
   const addTimerMinutes = (minutes: number) => {
+    if (boardReadOnly) return
     const addSeconds = minutes * 60
     setBoard((current) => {
       const curSeconds = current.timer.endsAt === null
@@ -628,6 +833,7 @@ function App() {
   }
 
   const toggleTimer = () => {
+    if (boardReadOnly) return
     if (timerRunning) {
       setBoard((current) => ({
         ...current,
@@ -665,6 +871,7 @@ function App() {
         ...remoteBoard,
         columns: ensureActionItemsAtLast(remoteBoard.columns),
       }
+      roomBoardIdRef.current = normalizedBoard.id
       setBoards((current) => current.some((item) => item.id === normalizedBoard.id)
         ? current.map((item) => item.id === normalizedBoard.id ? normalizedBoard : item)
         : [...current, normalizedBoard])
@@ -677,6 +884,7 @@ function App() {
   const startOwnerRoom = async (ownerBoard: BoardData, displayName = participantName.trim() || 'Owner'): Promise<boolean> => {
     roomRef.current?.destroy()
     roomRef.current = null
+    roomBoardIdRef.current = null
     setIsHost(true)
     setPeerCount(0)
     setPeerState('connecting')
@@ -718,6 +926,7 @@ function App() {
         onError: (error) => toast(error.message),
       })
       roomRef.current = room
+      roomBoardIdRef.current = ownerBoard.id
       writeRetroBoard(room.doc, ownerBoard)
       observeRoom(room, true)
       setSignalResult(room.id)
@@ -744,6 +953,7 @@ function App() {
     }
     roomRef.current?.destroy()
     roomRef.current = null
+    roomBoardIdRef.current = null
     setIsHost(false)
     setPeerCount(0)
     setSharedBoardReceived(false)
@@ -793,6 +1003,7 @@ function App() {
     setParticipantName(name)
     localStorage.setItem('together-retro-name', name)
     setModal(null)
+    setCurrentView('board')
     const targetPeerId = pendingPeerId || joinPeerId
     if (targetPeerId) {
       toast(`Joining board as ${name}…`)
@@ -808,14 +1019,23 @@ function App() {
     if (!title || !ownerName || columns.length < 2) return
     localStorage.setItem('together-retro-name', ownerName)
     const nextBoard = createBoardData(title, columns)
+    const nextBoards = boards.map((savedBoard) => {
+      if (!isBoardActive(savedBoard)) return savedBoard
+      const inactiveBoard = completeBoard(savedBoard, Date.now())
+      if (savedBoard.id === board.id && roomRef.current) {
+        writeRetroBoard(roomRef.current.doc, inactiveBoard)
+      }
+      return inactiveBoard
+    })
     roomRef.current?.destroy()
     roomRef.current = null
-    setBoards((current) => [...current, nextBoard])
+    roomBoardIdRef.current = null
+    setBoards([nextBoard, ...nextBoards])
     setActiveBoardId(nextBoard.id)
-    setBoardCreatedThisVisit(true)
     setIsHost(true)
     setNewBoardTitle('')
     setModal(null)
+    setCurrentView('board')
     const roomReady = await startOwnerRoom(nextBoard, ownerName)
     toast(roomReady ? 'Your board is ready! Share the link to invite your team.' : 'Board created locally.')
   }
@@ -823,12 +1043,6 @@ function App() {
   const addNewBoardColumn = () => {
     setNewBoardColumns((current) => {
       if (current.length >= 5) return current
-      const actionIdx = current.findIndex((c) => c.toLowerCase().includes('action'))
-      if (actionIdx !== -1) {
-        const next = [...current]
-        next.splice(actionIdx, 0, '')
-        return next
-      }
       return [...current, '']
     })
   }
@@ -842,6 +1056,10 @@ function App() {
   }
 
   const copyInviteDirect = async () => {
+    if (boardReadOnly) {
+      toast('This board is read-only. Create a new board to invite your team.')
+      return
+    }
     try {
       const hostId = roomRef.current?.id || signalResult || ownerPeerId || stableHostPeerId(board.id)
       if (!roomRef.current && isHost) {
@@ -870,6 +1088,7 @@ function App() {
   const resetConnection = () => {
     roomRef.current?.destroy()
     roomRef.current = null
+    roomBoardIdRef.current = null
     setPeerCount(0)
     setPeerState('idle')
     setSignalStep('start')
@@ -878,6 +1097,7 @@ function App() {
   }
 
   const setConnectionOpen = () => {
+    if (boardReadOnly) return
     setPeerRole(isHost ? 'host' : 'guest')
     setSignalStep(isHost && roomRef.current || !isHost && peerState === 'connecting' ? 'offer' : 'start')
     setSignalText(roomRef.current?.hostPeerId || joinPeerId)
@@ -893,10 +1113,15 @@ function App() {
     setModal('settings')
   }
 
+  const openNewBoard = () => {
+    setNewBoardTitle('')
+    setNewBoardColumns(DEFAULT_COLUMN_TITLES)
+    setModal('new-board')
+  }
+
   useEffect(() => {
     if (!ownerPeerId || autoHostStartedRef.current) return
     autoHostStartedRef.current = true
-    setBoardCreatedThisVisit(true)
     void startOwnerRoomRef.current(boardRef.current)
   }, [])
 
@@ -905,139 +1130,32 @@ function App() {
     window.clearTimeout(toastTimeout.current)
   }, [])
 
-  const showSetupPage = !joinPeerId && !ownerPeerId && !boardCreatedThisVisit
   const waitingForSharedBoard = Boolean(joinPeerId) && !sharedBoardReceived
 
   return (
     <div className="bg-background font-body-md text-on-surface antialiased min-h-screen flex flex-col">
-      {showSetupPage ? (
-        <main className="min-h-screen bg-background font-body-md text-on-surface flex flex-col items-center justify-center p-4 sm:p-8 relative overflow-hidden">
-          {/* Subtle background glow decorations */}
-          <div className="absolute top-[-10%] left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-primary/5 rounded-full blur-3xl pointer-events-none" />
-          <div className="absolute bottom-[-10%] right-[10%] w-[400px] h-[300px] bg-tertiary-fixed/30 rounded-full blur-3xl pointer-events-none" />
-
-          {/* Brand header */}
-          <div className="flex items-center mb-8 select-none">
-            <img alt="Together Retro Logo" className="h-12 sm:h-14 w-auto object-contain drop-shadow-sm" src={togetherLogo} />
-          </div>
-
-          {/* Main Setup Card */}
-          <div className="w-full max-w-[540px] rounded-3xl bg-surface-container-lowest border border-outline-variant/40 shadow-2xl p-6 sm:p-10 relative z-10">
-            {/* Visual Header / Illustration */}
-            <div className="flex flex-col items-center text-center mb-8">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 text-primary font-label-md text-label-md font-bold tracking-wider uppercase mb-3">
-                <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
-                <span>A fresh start for your team</span>
-              </div>
-              <h1 className="font-headline-lg text-2xl sm:text-3xl text-on-surface font-extrabold tracking-tight mb-2">
-                Make space to <span className="text-primary">look back together.</span>
-              </h1>
-              <p className="font-body-md text-body-md text-on-surface-variant max-w-md">
-                Create a retrospective board. Invite your team with a direct link, then share thoughts and celebrate wins peer-to-peer.
-              </p>
-            </div>
-
-            {/* Setup Form */}
-            <form onSubmit={(e) => void createBoard(e)} className="flex flex-col gap-5">
-              <div>
-                <label className="block font-label-md text-label-md font-semibold text-on-surface mb-1.5" htmlFor="setup-board-name">
-                  Give your retro a name
-                </label>
-                <input
-                  id="setup-board-name"
-                  type="text"
-                  className="w-full px-4 py-3 rounded-2xl bg-surface-container-low border border-outline-variant/60 focus:border-primary focus:ring-2 focus:ring-primary/20 text-on-surface font-body-md text-body-md outline-none transition-all"
-                  value={newBoardTitle}
-                  onChange={(e) => setNewBoardTitle(e.target.value)}
-                  placeholder="e.g. Sprint Retrospective"
-                  maxLength={60}
-                  required
-                  autoFocus
-                />
-              </div>
-
-              <div>
-                <label className="block font-label-md text-label-md font-semibold text-on-surface mb-1.5" htmlFor="setup-owner-name">
-                  Your name
-                </label>
-                <input
-                  id="setup-owner-name"
-                  type="text"
-                  className="w-full px-4 py-3 rounded-2xl bg-surface-container-low border border-outline-variant/60 focus:border-primary focus:ring-2 focus:ring-primary/20 text-on-surface font-body-md text-body-md outline-none transition-all"
-                  value={participantName}
-                  onChange={(e) => setParticipantName(e.target.value)}
-                  placeholder="How should your team identify you? (e.g. Alex)"
-                  maxLength={32}
-                  required
-                />
-              </div>
-
-              {/* Columns Setup */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-label-md text-label-md font-semibold text-on-surface">Columns</span>
-                  <span className="font-label-sm text-label-sm text-outline">{newBoardColumns.length} of 5</span>
-                </div>
-                <div className="flex flex-col gap-2.5">
-                  {newBoardColumns.map((colTitle, index) => {
-                    const colorClass = ['bg-emerald-400', 'bg-amber-400', 'bg-purple-400', 'bg-blue-400', 'bg-yellow-400'][index % 5]
-                    return (
-                      <div key={index} className="flex items-center gap-2">
-                        <span className={`w-3 h-3 rounded-full shrink-0 ${colorClass}`} />
-                        <input
-                          type="text"
-                          className="flex-1 px-3.5 py-2 rounded-xl bg-surface-container-low border border-outline-variant/50 focus:border-primary focus:ring-1 focus:ring-primary/20 text-on-surface font-body-sm text-body-sm outline-none transition-all"
-                          value={colTitle}
-                          onChange={(e) => updateNewBoardColumn(index, e.target.value)}
-                          placeholder={`Column ${index + 1}`}
-                          maxLength={28}
-                          required
-                        />
-                        <button
-                          type="button"
-                          className="w-8 h-8 rounded-lg flex items-center justify-center text-outline hover:text-error hover:bg-error-container/20 disabled:opacity-30 disabled:hover:text-outline disabled:hover:bg-transparent transition-colors"
-                          onClick={() => removeNewBoardColumn(index)}
-                          disabled={newBoardColumns.length <= 2}
-                          title="Remove column"
-                        >
-                          <span className="material-symbols-outlined text-[18px]">delete</span>
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-                {newBoardColumns.length < 5 && (
-                  <button
-                    type="button"
-                    onClick={addNewBoardColumn}
-                    className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">add</span>
-                    <span>Add a column</span>
-                  </button>
-                )}
-              </div>
-
-              {/* Buttons */}
-              <div className="pt-2 flex flex-col gap-2.5">
-                <button
-                  type="submit"
-                  disabled={!newBoardTitle.trim() || !participantName.trim() || newBoardColumns.some((c) => !c.trim())}
-                  className="w-full py-3.5 rounded-2xl bg-primary text-on-primary font-headline-sm text-headline-sm font-bold shadow-lg shadow-primary/25 hover:shadow-xl hover:opacity-95 active:scale-[0.99] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <span className="material-symbols-outlined text-[20px]">rocket_launch</span>
-                  <span>Create my board</span>
-                </button>
-              </div>
-
-              {/* Privacy Footnote */}
-              <div className="pt-2 border-t border-outline-variant/30 flex items-center justify-center gap-1.5 text-outline text-[12px]">
-                <span className="material-symbols-outlined text-[14px]">lock</span>
-                <span>No accounts needed. Board syncs peer-to-peer via WebRTC.</span>
-              </div>
-            </form>
-          </div>
-        </main>
+      {currentView === 'dashboard' ? (
+        <DashboardView
+          boards={boards}
+          participantName={participantName}
+          onOpenBoard={(id) => {
+            if (roomBoardIdRef.current !== id) {
+              roomRef.current?.destroy()
+              roomRef.current = null
+              roomBoardIdRef.current = null
+              setIsHost(false)
+              setPeerCount(0)
+              setPeerState('idle')
+            }
+            setActiveBoardId(id)
+            setCurrentView('board')
+          }}
+          onCreateBoardClick={openNewBoard}
+          onJoinBoard={handleJoinFromDashboard}
+          onToggleStar={toggleStar}
+          onOpenSettings={openSettings}
+          onImportBoards={importBoards}
+        />
       ) : (
         <>
           {/* HEADER BAR */}
@@ -1045,10 +1163,25 @@ function App() {
             <div className="h-16 px-margin flex items-center justify-between gap-gutter max-w-[1920px] mx-auto w-full">
               {/* Left: Logo & Breadcrumbs */}
               <div className="flex items-center gap-space-md shrink-0">
-                <div className="flex items-center cursor-pointer" onClick={() => setModal('settings')}>
-                  <img alt="Together Retro Logo" className="h-9 sm:h-10 w-auto object-contain" src={togetherLogo} />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setCurrentView('dashboard')}
+                  className="flex items-center cursor-pointer group"
+                  title="Return to Dashboard"
+                >
+                  <img alt="Together Retro Logo" className="h-9 sm:h-10 w-auto object-contain group-hover:scale-105 transition-transform" src={togetherLogo} />
+                </button>
                 <div className="h-5 w-px bg-outline-variant/60"></div>
+                <button
+                  type="button"
+                  onClick={() => setCurrentView('dashboard')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-label-md transition-colors cursor-pointer"
+                  title="Back to Dashboard"
+                >
+                  <span className="material-symbols-outlined text-[16px]">arrow_back</span>
+                  <span className="hidden sm:inline">Dashboard</span>
+                </button>
+                <div className="h-4 w-px bg-outline-variant/40 hidden sm:block"></div>
                 <div className="flex items-center gap-space-xs text-on-surface">
                   <span className="font-headline-md text-headline-md text-on-surface font-semibold truncate max-w-[180px] lg:max-w-none">{board.title}</span>
                 </div>
@@ -1113,7 +1246,8 @@ function App() {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <button
-                      className="w-7 h-7 rounded-lg bg-secondary text-on-secondary hover:opacity-90 flex items-center justify-center shadow-sm hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                      className="w-7 h-7 rounded-lg bg-secondary text-on-secondary hover:opacity-90 flex items-center justify-center shadow-sm hover:scale-105 active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={boardReadOnly}
                       id="timer-play-btn"
                       onClick={toggleTimer}
                       title={timerRunning ? 'Pause Timer' : 'Resume / Start Timer'}
@@ -1122,7 +1256,8 @@ function App() {
                       <span className="material-symbols-outlined text-[16px]">{timerRunning ? 'pause' : 'play_arrow'}</span>
                     </button>
                     <button
-                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer"
+                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={boardReadOnly}
                       onClick={() => addTimerMinutes(1)}
                       title="Add 1 minute"
                       type="button"
@@ -1130,7 +1265,8 @@ function App() {
                       +1m
                     </button>
                     <button
-                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer"
+                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={boardReadOnly}
                       onClick={() => addTimerMinutes(3)}
                       title="Add 3 minutes"
                       type="button"
@@ -1138,7 +1274,8 @@ function App() {
                       +3m
                     </button>
                     <button
-                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer"
+                      className="px-1.5 py-1 rounded-lg bg-surface-container hover:bg-secondary-fixed/40 text-on-surface hover:text-on-secondary-fixed font-label-sm text-[11px] font-bold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      disabled={boardReadOnly}
                       onClick={() => addTimerMinutes(5)}
                       title="Add 5 minutes"
                       type="button"
@@ -1155,11 +1292,7 @@ function App() {
                 {isHost && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setNewBoardTitle('')
-                      setNewBoardColumns(DEFAULT_COLUMN_TITLES)
-                      setModal('new-board')
-                    }}
+                    onClick={openNewBoard}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high border border-outline-variant/40 text-on-surface font-label-md text-label-md transition-all shadow-sm cursor-pointer"
                     title="Start a new retrospective board"
                   >
@@ -1170,10 +1303,11 @@ function App() {
 
                 {/* Invite P2P button */}
                 <button
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-primary text-on-primary hover:opacity-95 font-label-md text-label-md transition-all shadow-sm cursor-pointer group"
                   title="Invite collaborators via Direct Peer-to-Peer link"
                   type="button"
                   onClick={() => void copyInviteDirect()}
+                  disabled={boardReadOnly}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-primary text-on-primary hover:opacity-95 font-label-md text-label-md transition-all shadow-sm cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <span className="material-symbols-outlined text-[18px]">link</span>
                   <span>Invite P2P</span>
@@ -1200,6 +1334,11 @@ function App() {
                 Try again
               </button>
             )}
+          </div>
+        )}
+        {boardReadOnly && (
+          <div className="w-full bg-surface-container-low border-b border-outline-variant/30 px-margin py-2 text-center text-xs font-semibold text-on-surface-variant">
+            This board is inactive and read-only. Create a new board to start another retrospective.
           </div>
         )}
         <div className="flex flex-col w-full">
@@ -1342,7 +1481,8 @@ function App() {
                         <div className="flex items-center gap-1 shrink-0">
                           {meta.emoji === '✨' && (
                             <button
-                              className="w-8 h-8 rounded-lg bg-surface-container hover:bg-surface-container-high text-primary flex items-center justify-center transition-transform active:scale-90 cursor-pointer"
+                              className="w-8 h-8 rounded-lg bg-surface-container hover:bg-surface-container-high text-primary flex items-center justify-center transition-transform active:scale-90 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                              disabled={boardReadOnly}
                               onClick={triggerConfetti}
                               title="Trigger Team Confetti!"
                               type="button"
@@ -1361,7 +1501,8 @@ function App() {
                             <span className="material-symbols-outlined text-[18px]">swap_vert</span>
                           </button>
                           <button
-                            className="w-8 h-8 rounded-lg bg-surface-container-high/80 hover:bg-surface-container-highest text-on-surface flex items-center justify-center transition-colors cursor-pointer"
+                            className="w-8 h-8 rounded-lg bg-surface-container-high/80 hover:bg-surface-container-highest text-on-surface flex items-center justify-center transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            disabled={boardReadOnly}
                             onClick={() => focusComposer(column.id)}
                             title="Add note"
                             type="button"
@@ -1378,6 +1519,7 @@ function App() {
                       >
                         <textarea
                           className="w-full bg-transparent resize-none border-none focus:outline-none font-body-md text-body-md text-on-surface placeholder:text-outline"
+                          disabled={boardReadOnly}
                           value={inlineDrafts[column.id] ?? ''}
                           onChange={(e) => setInlineDrafts((prev) => ({ ...prev, [column.id]: e.target.value }))}
                           placeholder={meta.placeholder}
@@ -1392,7 +1534,7 @@ function App() {
                           <button
                             className={`inline-flex items-center gap-1 px-3 py-1 rounded-lg ${meta.buttonBg} hover:opacity-90 font-label-md text-label-md shadow-sm transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed`}
                             type="submit"
-                            disabled={!inlineDrafts[column.id]?.trim()}
+                            disabled={boardReadOnly || !inlineDrafts[column.id]?.trim()}
                           >
                             <span>Post</span>
                             <span className="material-symbols-outlined text-[16px]">arrow_upward</span>
@@ -1418,7 +1560,7 @@ function App() {
                                   <span className="font-label-md text-label-md text-on-surface font-medium truncate">{note.author}</span>
                                   <span className="text-outline text-[12px] shrink-0">• {relativeTime(note.createdAt, timerNow)}</span>
                                 </div>
-                                {note.authorId === reactionActorId && (
+                                {!boardReadOnly && note.authorId === reactionActorId && (
                                   <button
                                     type="button"
                                     onClick={() => deleteNote(note.id)}
@@ -1440,6 +1582,7 @@ function App() {
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   {/* Upvote button */}
                                   <button
+                                    disabled={boardReadOnly}
                                     className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-label-md text-label-md hover:scale-105 active:scale-95 transition-transform cursor-pointer ${
                                       hasVoted
                                         ? 'bg-primary text-on-primary'
@@ -1459,6 +1602,7 @@ function App() {
                                   <div className="relative reaction-picker-container">
                                     <button
                                       type="button"
+                                      disabled={boardReadOnly}
                                       className={`p-1 rounded-full hover:bg-surface-container transition-colors cursor-pointer flex items-center justify-center ${
                                         reactionPickerNoteId === note.id ? 'text-primary bg-surface-container' : 'text-outline hover:text-on-surface'
                                       }`}
@@ -1471,7 +1615,7 @@ function App() {
                                       <span className="material-symbols-outlined text-[16px]">add_reaction</span>
                                     </button>
 
-                                    {reactionPickerNoteId === note.id && (
+                                    {!boardReadOnly && reactionPickerNoteId === note.id && (
                                       <ReactionPickerPopover
                                         noteId={note.id}
                                         reactions={note.reactions}
@@ -1491,6 +1635,7 @@ function App() {
                                       <button
                                         key={emoji}
                                         type="button"
+                                        disabled={boardReadOnly}
                                         onClick={() => toggleReaction(note.id, emoji)}
                                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-label-sm text-label-sm cursor-pointer transition-colors ${
                                           active
@@ -1531,7 +1676,7 @@ function App() {
                                           <span className="font-label-sm text-label-sm text-on-surface font-semibold">{comment.author}</span>
                                           <span className="text-[11px] text-outline">• {relativeTime(comment.createdAt, timerNow)}</span>
                                         </div>
-                                        {comment.authorId === reactionActorId && (
+                                        {!boardReadOnly && comment.authorId === reactionActorId && (
                                           <button
                                             type="button"
                                             onClick={() => deleteComment(note.id, comment.id)}
@@ -1556,6 +1701,7 @@ function App() {
                                     <div className="flex-1 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container border border-outline-variant/40 focus-within:ring-2 focus-within:ring-primary">
                                       <input
                                         type="text"
+                                        disabled={boardReadOnly}
                                         placeholder="Reply or add a suggestion..."
                                         value={commentDrafts[note.id] ?? ''}
                                         onChange={(e) => setCommentDrafts((prev) => ({ ...prev, [note.id]: e.target.value }))}
@@ -1563,7 +1709,7 @@ function App() {
                                       />
                                       <button
                                         type="submit"
-                                        disabled={!commentDrafts[note.id]?.trim()}
+                                        disabled={boardReadOnly || !commentDrafts[note.id]?.trim()}
                                         className="px-2 py-0.5 rounded bg-primary text-on-primary font-label-sm text-label-sm font-medium hover:opacity-90 transition-opacity shrink-0 disabled:opacity-50 cursor-pointer"
                                       >
                                         Reply
@@ -1659,7 +1805,7 @@ function App() {
                   className="text-field"
                   value={newBoardTitle}
                   onChange={(e) => setNewBoardTitle(e.target.value)}
-                  placeholder="e.g. Sprint 43 Retrospective"
+                  placeholder="e.g. Sprint Retrospective"
                   maxLength={60}
                   required
                   autoFocus
@@ -1724,17 +1870,25 @@ function App() {
                 <span className="modal-icon"><span className="material-symbols-outlined">settings</span></span>
                 <button className="modal-close" onClick={() => setModal(null)}><span className="material-symbols-outlined">close</span></button>
               </div>
-              <h2>Board & Profile Settings</h2>
-              <p className="modal-description">Customize your board details and personal identity.</p>
+              <h2>{currentView === 'dashboard' ? 'Profile settings' : 'Board & Profile Settings'}</h2>
+              <p className="modal-description">
+                {currentView === 'dashboard'
+                  ? 'Update the name your teammates will see.'
+                  : 'Customize your board details and personal identity.'}
+              </p>
 
-              <label className="field-label" htmlFor="board-title-input">Retrospective title</label>
-              <input
-                id="board-title-input"
-                className="text-field"
-                value={editBoardTitle}
-                onChange={(e) => setEditBoardTitle(e.target.value)}
-                maxLength={60}
-              />
+              {currentView === 'board' && !boardReadOnly && (
+                <>
+                  <label className="field-label" htmlFor="board-title-input">Retrospective title</label>
+                  <input
+                    id="board-title-input"
+                    className="text-field"
+                    value={editBoardTitle}
+                    onChange={(e) => setEditBoardTitle(e.target.value)}
+                    maxLength={60}
+                  />
+                </>
+              )}
 
               <label className="field-label" htmlFor="profile-name-input">Your name</label>
               <input
@@ -1755,7 +1909,7 @@ function App() {
                       setParticipantName(editName.trim())
                       localStorage.setItem('together-retro-name', editName.trim())
                     }
-                    if (editBoardTitle.trim()) {
+                    if (currentView === 'board' && !boardReadOnly && editBoardTitle.trim()) {
                       setBoard((prev) => ({ ...prev, title: editBoardTitle.trim() }))
                     }
                     setModal(null)
