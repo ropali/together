@@ -11,6 +11,8 @@ interface DashboardViewProps {
   onToggleStar: (boardId: string) => void
   onOpenSettings: () => void
   onImportBoards: (data: unknown) => { imported: number; skipped: number; error?: string }
+  darkMode: boolean
+  onToggleDarkMode: () => void
 }
 
 type FilterTab = 'all' | 'active' | 'completed' | 'starred'
@@ -35,6 +37,8 @@ export function DashboardView({
   onToggleStar,
   onOpenSettings,
   onImportBoards,
+  darkMode,
+  onToggleDarkMode,
 }: DashboardViewProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [filterTab, setFilterTab] = useState<FilterTab>('all')
@@ -154,11 +158,13 @@ export function DashboardView({
               data-path="dashboard-boards"
               type="button"
             >
-              <img
-                alt="Together Retro Logo"
-                className="h-9 sm:h-10 w-auto object-contain group-hover:scale-105 transition-transform"
-                src={togetherLogo}
-              />
+              <span className="brand-logo-frame inline-flex">
+                <img
+                  alt="Together Retro Logo"
+                  className="h-9 sm:h-10 w-auto object-contain group-hover:scale-105 transition-transform"
+                  src={togetherLogo}
+                />
+              </span>
             </button>
             <nav className="hidden md:flex items-center gap-1.5">
               <button
@@ -219,6 +225,16 @@ export function DashboardView({
             >
               <span className="material-symbols-outlined text-[18px]">upload</span>
               <span className="hidden sm:inline">Import JSON</span>
+            </button>
+            <button
+              type="button"
+              onClick={onToggleDarkMode}
+              aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-pressed={darkMode}
+              title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="w-9 h-9 rounded-xl bg-surface-container hover:bg-surface-container-high text-on-surface flex items-center justify-center transition-colors cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-[18px]">{darkMode ? 'light_mode' : 'dark_mode'}</span>
             </button>
             <button
               onClick={onOpenSettings}

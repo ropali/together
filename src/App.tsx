@@ -20,6 +20,7 @@ type Modal = 'connect' | 'settings' | 'new-board' | 'guest-name' | null
 const REACTION_ACTOR_KEY = 'together-retro-reaction-actor-v5'
 const STORAGE_KEY = 'together-retro-boards-v5'
 const ACTIVE_BOARD_KEY = 'together-retro-active-board-v5'
+const THEME_KEY = 'together-retro-theme'
 const BOARD_IDLE_TIMEOUT_MS = 60 * 60 * 1000
 const LEGACY_DEMO_BOARD_IDS = new Set([
   'sprint-42',
@@ -531,6 +532,7 @@ function App() {
     if (joinPeerId || ownerPeerId) return 'board'
     return 'dashboard'
   })
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem(THEME_KEY) === 'dark')
   const [notice, setNotice] = useState('')
   const chimePlayedRef = useRef(false)
 
@@ -539,6 +541,8 @@ function App() {
       current.map((b) => (b.id === boardId ? { ...b, starred: !b.starred } : b)),
     )
   }
+
+  const toggleDarkMode = () => setDarkMode((current) => !current)
 
   const importBoards = (data: unknown): { imported: number; skipped: number; error?: string } => {
     if (!Array.isArray(data) || data.length === 0 || !data.every(isImportedBoard)) {
@@ -637,6 +641,16 @@ function App() {
       window.history.replaceState(null, '', updateBoardUrl(board, 'owner', roomRef.current.id))
     }
   }, [board, boards, peerState, isHost])
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode)
+    document.documentElement.style.colorScheme = darkMode ? 'dark' : 'light'
+    try {
+      localStorage.setItem(THEME_KEY, darkMode ? 'dark' : 'light')
+    } catch (error) {
+      console.warn('Could not save theme preference.', error)
+    }
+  }, [darkMode])
 
   useEffect(() => {
     const timerInterval = window.setInterval(() => {
@@ -1155,6 +1169,8 @@ function App() {
           onToggleStar={toggleStar}
           onOpenSettings={openSettings}
           onImportBoards={importBoards}
+          darkMode={darkMode}
+          onToggleDarkMode={toggleDarkMode}
         />
       ) : (
         <>
@@ -1169,7 +1185,9 @@ function App() {
                   className="flex items-center cursor-pointer group"
                   title="Return to Dashboard"
                 >
-                  <img alt="Together Retro Logo" className="h-9 sm:h-10 w-auto object-contain group-hover:scale-105 transition-transform" src={togetherLogo} />
+                  <span className="brand-logo-frame inline-flex">
+                    <img alt="Together Retro Logo" className="h-9 sm:h-10 w-auto object-contain group-hover:scale-105 transition-transform" src={togetherLogo} />
+                  </span>
                 </button>
                 <div className="h-5 w-px bg-outline-variant/60"></div>
                 <button
@@ -1288,6 +1306,16 @@ function App() {
 
               {/* Right: Actions */}
               <div className="flex items-center gap-space-md shrink-0">
+                <button
+                  type="button"
+                  onClick={toggleDarkMode}
+                  aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                  aria-pressed={darkMode}
+                  title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                  className="w-9 h-9 rounded-xl bg-surface-container hover:bg-surface-container-high text-on-surface flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-[18px]">{darkMode ? 'light_mode' : 'dark_mode'}</span>
+                </button>
                 {/* New Board button (for Host) */}
                 {isHost && (
                   <button
@@ -1968,7 +1996,7 @@ function App() {
                 <>
                   <div className="p-3 rounded-xl bg-surface-container border border-outline-variant/40 flex flex-col gap-2 mb-4">
                     <span className="text-[11px] font-semibold text-outline uppercase tracking-wider">Shareable P2P Invite Link</span>
-                    <div className="text-xs text-on-surface break-all font-mono bg-white/80 p-2 rounded-lg border border-outline-variant/30 select-all">
+                    <div className="text-xs text-on-surface break-all font-mono bg-surface-container-lowest/80 p-2 rounded-lg border border-outline-variant/30 select-all">
                       {window.location.origin}{window.location.pathname}?join={signalResult || ownerPeerId || stableHostPeerId(board.id)}&board={board.id}&setup={encodeURIComponent(JSON.stringify({ id: board.id, title: board.title, columns: board.columns.map(c => c.title) }))}
                     </div>
                   </div>

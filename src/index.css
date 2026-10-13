@@ -2,6 +2,108 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  color-scheme: light;
+  --color-on-tertiary: 255 255 255;
+  --color-inverse-primary: 192 193 255;
+  --color-background: 250 248 255;
+  --color-surface-container: 234 237 255;
+  --color-on-surface-variant: 70 69 84;
+  --color-on-secondary: 255 255 255;
+  --color-secondary: 0 108 73;
+  --color-on-tertiary-container: 255 251 255;
+  --color-surface-dim: 210 217 244;
+  --color-surface-tint: 73 75 214;
+  --color-tertiary-fixed: 255 219 202;
+  --color-surface-bright: 250 248 255;
+  --color-error: 186 26 26;
+  --color-secondary-fixed: 111 251 190;
+  --color-surface: 250 248 255;
+  --color-on-primary: 255 255 255;
+  --color-on-secondary-fixed-variant: 0 82 54;
+  --color-on-error: 255 255 255;
+  --color-tertiary-container: 192 84 0;
+  --color-tertiary: 153 65 0;
+  --color-primary: 70 72 212;
+  --color-on-error-container: 147 0 10;
+  --color-surface-container-lowest: 255 255 255;
+  --color-surface-container-highest: 218 226 253;
+  --color-inverse-surface: 40 48 68;
+  --color-on-tertiary-fixed: 52 17 0;
+  --color-outline: 118 117 134;
+  --color-on-secondary-fixed: 0 33 19;
+  --color-inverse-on-surface: 238 240 255;
+  --color-on-background: 19 27 46;
+  --color-secondary-container: 108 248 187;
+  --color-on-surface: 19 27 46;
+  --color-on-primary-container: 255 251 255;
+  --color-outline-variant: 199 196 215;
+  --color-on-secondary-container: 0 113 77;
+  --color-on-primary-fixed-variant: 47 46 190;
+  --color-surface-container-low: 242 243 255;
+  --color-secondary-fixed-dim: 78 222 163;
+  --color-tertiary-fixed-dim: 255 182 144;
+  --color-surface-container-high: 226 231 255;
+  --color-surface-variant: 218 226 253;
+  --color-primary-fixed-dim: 192 193 255;
+  --color-on-primary-fixed: 7 0 108;
+  --color-error-container: 255 218 214;
+  --color-primary-container: 96 99 238;
+  --color-primary-fixed: 225 224 255;
+  --color-on-tertiary-fixed-variant: 120 50 0;
+}
+
+.dark {
+  color-scheme: dark;
+  --color-on-tertiary: 255 255 255;
+  --color-inverse-primary: 70 72 212;
+  --color-background: 17 24 39;
+  --color-surface-container: 38 48 68;
+  --color-on-surface-variant: 194 201 220;
+  --color-on-secondary: 0 33 19;
+  --color-secondary: 111 251 190;
+  --color-on-tertiary-container: 255 232 220;
+  --color-surface-dim: 17 24 39;
+  --color-surface-tint: 192 193 255;
+  --color-tertiary-fixed: 86 48 32;
+  --color-surface-bright: 52 62 82;
+  --color-error: 255 180 171;
+  --color-secondary-fixed: 23 75 58;
+  --color-surface: 24 32 49;
+  --color-on-primary: 24 32 49;
+  --color-on-secondary-fixed-variant: 111 251 190;
+  --color-on-error: 105 0 5;
+  --color-tertiary-container: 192 84 0;
+  --color-tertiary: 255 182 144;
+  --color-primary: 192 193 255;
+  --color-on-error-container: 255 218 214;
+  --color-surface-container-lowest: 21 29 45;
+  --color-surface-container-highest: 58 69 91;
+  --color-inverse-surface: 226 231 255;
+  --color-on-tertiary-fixed: 255 219 202;
+  --color-outline: 165 171 191;
+  --color-on-secondary-fixed: 185 255 219;
+  --color-inverse-on-surface: 40 48 68;
+  --color-on-background: 232 235 250;
+  --color-secondary-container: 23 75 58;
+  --color-on-surface: 232 235 250;
+  --color-on-primary-container: 255 251 255;
+  --color-outline-variant: 74 83 105;
+  --color-on-secondary-container: 185 255 219;
+  --color-on-primary-fixed-variant: 192 193 255;
+  --color-surface-container-low: 29 38 56;
+  --color-secondary-fixed-dim: 45 132 99;
+  --color-tertiary-fixed-dim: 112 61 37;
+  --color-surface-container-high: 46 57 77;
+  --color-surface-variant: 58 69 91;
+  --color-primary-fixed-dim: 70 72 140;
+  --color-on-primary-fixed: 225 224 255;
+  --color-error-container: 105 0 5;
+  --color-primary-container: 69 71 160;
+  --color-primary-fixed: 54 56 112;
+  --color-on-tertiary-fixed-variant: 255 182 144;
+}
+
 @layer base {
   html, body {
     margin: 0;
@@ -9,8 +111,8 @@
   }
   body {
     overscroll-behavior: none;
-    background-color: #faf8ff;
-    color: #131b2e;
+    background-color: rgb(var(--color-background));
+    color: rgb(var(--color-on-background));
     font-family: 'Inter', sans-serif;
   }
   main > :first-child {
